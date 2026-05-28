@@ -2,6 +2,9 @@ package attest
 
 import (
 	"context"
+	"encoding/hex"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -46,6 +49,29 @@ func TestSigsumQuorumPolicy(t *testing.T) {
 	}
 }
 
+func TestSigsumEmbeddedPolicyTrustRoot(t *testing.T) {
+	fixture := newSignedFixture(t, 3)
+	root := fixture.TrustRoot
+	root.Sigsum = SigsumTrustRoot{Policy: sigsumPolicyTextFromTrustRoot(t, fixture.TrustRoot.Sigsum)}
+	result, err := Verify(context.Background(), VerifyRequest{
+		Bundle:           fixture.Bundle,
+		Subjects:         []Subject{fixture.Subject},
+		TrustRoot:        root,
+		ExpectedIdentity: fixture.IdentityPolicy,
+		Now:              fixedTime.Add(time.Hour),
+		MaxWitnessAge:    24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("embedded Sigsum policy should verify: %v", err)
+	}
+	if result.State != StateTrusted {
+		t.Fatalf("state = %s, want trusted; diagnostics=%+v", result.State, result.Diagnostics)
+	}
+	if result.Transparency.QuorumPolicy != "embedded Sigsum policy" {
+		t.Fatalf("quorum policy = %q", result.Transparency.QuorumPolicy)
+	}
+}
+
 func TestSigsumStaleTreeHeadIsWarning(t *testing.T) {
 	fixture := newSignedFixture(t, 3)
 	result, err := Verify(context.Background(), VerifyRequest{
@@ -65,6 +91,32 @@ func TestSigsumStaleTreeHeadIsWarning(t *testing.T) {
 	if !result.Transparency.Stale {
 		t.Fatalf("transparency should be marked stale: %+v", result.Transparency)
 	}
+}
+
+func sigsumPolicyTextFromTrustRoot(t *testing.T, root SigsumTrustRoot) string {
+	t.Helper()
+	var builder strings.Builder
+	for _, log := range root.Logs {
+		fmt.Fprintf(&builder, "log %s\n", trustedKeyHex(t, log))
+	}
+	var witnessNames []string
+	for i, witness := range root.Witnesses {
+		name := fmt.Sprintf("w%d", i+1)
+		witnessNames = append(witnessNames, name)
+		fmt.Fprintf(&builder, "witness %s %s\n", name, trustedKeyHex(t, witness))
+	}
+	fmt.Fprintf(&builder, "group quorum-rule %d %s\n", root.Quorum, strings.Join(witnessNames, " "))
+	builder.WriteString("quorum quorum-rule\n")
+	return builder.String()
+}
+
+func trustedKeyHex(t *testing.T, key TrustedKey) string {
+	t.Helper()
+	publicKey, err := ParsePublicKey(key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return hex.EncodeToString(publicKey)
 }
 
 func TestSigsumCorruptedProofIsWarningNotRed(t *testing.T) {

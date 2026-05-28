@@ -7,6 +7,27 @@ import (
 	"time"
 )
 
+func TestLiveSigsumRejectsMixedLocalAndLiveOptions(t *testing.T) {
+	subject, err := SubjectFromFile(SubjectFileOptions{Path: writeTinyGGUF(t), Name: "tiny.gguf", RequireGGUF: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	signing := mustKeyPair(t)
+	_, err = Sign(context.Background(), SignOptions{
+		Subjects:   []Subject{subject},
+		PrivateKey: signing.PrivateKey,
+		KeyID:      "s46-build-prod",
+		SignedAt:   fixedTime,
+		Sigsum: &SigsumSignOptions{
+			PolicyName:    "sigsum-test1-2025",
+			LogPrivateKey: mustKeyPair(t).PrivateKey,
+		},
+	})
+	if err == nil {
+		t.Fatal("mixed live/local Sigsum options should fail")
+	}
+}
+
 func TestSigsumTrustRootFromNamedPolicy(t *testing.T) {
 	root, err := NewTrustRoot(TrustRootOptions{
 		SigningKeys:      []TrustedKey{{KeyID: "s46-build-prod", PublicKey: mustKeyPair(t).PublicKey}},

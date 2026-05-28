@@ -43,6 +43,61 @@ func TestCLITrustRootFromNamedSigsumPolicy(t *testing.T) {
 	}
 }
 
+func TestCLIStrictFailsWarningState(t *testing.T) {
+	root := t.TempDir()
+	devDir := filepath.Join(root, "dev")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"dev-init", "--dir", devDir, "--witnesses", "4", "--quorum", "3"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("dev-init exit %d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	model := filepath.Join(root, "tiny.gguf")
+	writeTinyGGUF(t, model)
+	bundlePath := filepath.Join(root, "bundle.json")
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{
+		"sign",
+		"--file", model,
+		"--bundle", bundlePath,
+		"--key-id", "s46-build-prod",
+		"--private-key-file", filepath.Join(devDir, "signing.private"),
+		"--identity-issuer", "https://issuer.s46.dev",
+		"--identity-subject", "repo:sovereign46/models:ref:refs/heads/main",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("sign exit %d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	verifyArgs := []string{
+		"verify",
+		"--file", model,
+		"--bundle", bundlePath,
+		"--trust-root", filepath.Join(devDir, "trust-root.json"),
+		"--key-id", "s46-build-prod",
+		"--identity-issuer", "https://issuer.s46.dev",
+		"--identity-subject", "repo:sovereign46/models:ref:refs/heads/main",
+	}
+	code = run(verifyArgs, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("default warning verify exit %d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	var result attest.VerifyResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("verify output is not JSON: %v\n%s", err, stdout.String())
+	}
+	if result.State != attest.StateWarning {
+		t.Fatalf("state = %s, want warning", result.State)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = run(append(verifyArgs, "--strict"), &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("strict warning verify exit %d, want 2; stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+}
+
 func TestCLIEndToEndSmallGGUF(t *testing.T) {
 	root := t.TempDir()
 	devDir := filepath.Join(root, "dev")

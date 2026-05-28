@@ -68,6 +68,10 @@ func (v *verification) run() (VerifyResult, error) {
 	v.result.SigningKeyID = trustedKey.KeyID
 	v.result.SignatureTime = statement.Predicate.SignedAt
 	v.result.SigningIdentity = statement.Predicate.Signer.Identity
+	if statement.Predicate.SignedAt.After(v.req.Now.Add(DefaultSignatureFutureSkew)) {
+		v.refuse("signature-time-in-future", fmt.Sprintf("signature time %s is after verifier time %s", statement.Predicate.SignedAt.Format(time.RFC3339), v.req.Now.Format(time.RFC3339)))
+		return v.finish()
+	}
 	if err := v.applyTrustStatus(statement); err != nil {
 		v.refuse("trust-status-refused", err.Error())
 		return v.finish()
@@ -122,6 +126,9 @@ func (v *verification) verifyAttestation(statement Statement) error {
 	if len(statement.Subject) == 0 {
 		return fmt.Errorf("statement contains no subjects")
 	}
+	if len(statement.Subject) > MaxStatementSubjects {
+		return fmt.Errorf("statement contains too many subjects: %d > %d", len(statement.Subject), MaxStatementSubjects)
+	}
 	if len(v.req.Subjects) == 0 {
 		return fmt.Errorf("verification requires at least one expected subject")
 	}
@@ -136,6 +143,9 @@ func (v *verification) verifyAttestation(statement Statement) error {
 	for i := range expected {
 		if actual[i].Name != expected[i].Name {
 			return fmt.Errorf("subject[%d] name mismatch: bundle %q expected %q", i, actual[i].Name, expected[i].Name)
+		}
+		if len(actual[i].Digest) > MaxSubjectDigests {
+			return fmt.Errorf("subject %q contains too many digests: %d > %d", expected[i].Name, len(actual[i].Digest), MaxSubjectDigests)
 		}
 		if strings.ToLower(actual[i].Digest[DigestAlgorithmSHA256]) != strings.ToLower(expected[i].SHA256) {
 			return fmt.Errorf("subject %q sha256 mismatch", expected[i].Name)

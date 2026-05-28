@@ -131,6 +131,10 @@ go test ./...
 go test -race ./...
 go vet ./...
 S46_ATTEST_LIVE_SIGSUM=1 go test -run TestLiveSigsumSubmissionToTestLog -v -timeout 5m
+
+go test -run '^$' -fuzz=FuzzParseBundle -fuzztime=30s .
+go test -run '^$' -fuzz=FuzzParseTrustRoot -fuzztime=30s .
+go test -run '^$' -fuzz=FuzzVerifyBytes -fuzztime=30s .
 ```
 
-The test suite includes Sigstore-semantics DSSE/in-toto tests, Sigsum quorum/staleness/corruption tests, TUF-style transparency status tests, identity revocation tests, and an end-to-end CLI test against a tiny GGUF fixture.
+The test suite includes Sigstore-semantics DSSE/in-toto tests, malformed bundle/trust-root parser tests, Sigsum quorum/staleness/corruption tests, embedded-policy and live-log tests, TUF-style transparency status tests, identity revocation tests, fuzz targets, strict/default CLI tests, and end-to-end CLI tests against a tiny GGUF fixture.

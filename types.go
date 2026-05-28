@@ -3,15 +3,18 @@ package attest
 import "time"
 
 const (
-	SchemaVersion          = 1
-	BundleMediaType        = "application/vnd.s46.attestation.bundle.v1+json"
-	InTotoPayloadType      = "application/vnd.in-toto+json"
-	InTotoStatementType    = "https://in-toto.io/Statement/v1"
-	S46PredicateType       = "https://sovereign46.dev/attestation/v1"
-	SignatureAlgorithm     = "ed25519"
-	DigestAlgorithmSHA256  = "sha256"
-	DefaultWitnessMaxAge   = 24 * time.Hour
-	DefaultSubjectFileName = "artifact"
+	SchemaVersion              = 1
+	BundleMediaType            = "application/vnd.s46.attestation.bundle.v1+json"
+	InTotoPayloadType          = "application/vnd.in-toto+json"
+	InTotoStatementType        = "https://in-toto.io/Statement/v1"
+	S46PredicateType           = "https://sovereign46.dev/attestation/v1"
+	SignatureAlgorithm         = "ed25519"
+	DigestAlgorithmSHA256      = "sha256"
+	DefaultWitnessMaxAge       = 24 * time.Hour
+	DefaultSignatureFutureSkew = 5 * time.Minute
+	DefaultSubjectFileName     = "artifact"
+	MaxStatementSubjects       = 1024
+	MaxSubjectDigests          = 32
 )
 
 type State string
