@@ -1,4 +1,4 @@
-module github.com/sovereign46/s46-attest
+module github.com/sovereign46/attest
 
 go 1.25.0
 

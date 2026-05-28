@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	attest "github.com/sovereign46/s46-attest"
+	attest "github.com/sovereign46/attest"
 )
 
 func TestCLITrustRootFromNamedSigsumPolicy(t *testing.T) {

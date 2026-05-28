@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	attest "github.com/sovereign46/s46-attest"
+	attest "github.com/sovereign46/attest"
 )
 
 func main() {

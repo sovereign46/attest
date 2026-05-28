@@ -26,10 +26,30 @@ func SubjectFromFile(options SubjectFileOptions) (Subject, error) {
 	if name == "" {
 		name = filepath.Base(options.Path)
 	}
-	if name == "." || name == string(filepath.Separator) || strings.Contains(name, "\x00") || strings.Contains(filepath.ToSlash(name), "../") || strings.HasPrefix(filepath.ToSlash(name), "../") || strings.HasPrefix(filepath.ToSlash(name), "/") {
-		return Subject{}, fmt.Errorf("unsafe subject name %q", name)
+	name, err = cleanSubjectName(name)
+	if err != nil {
+		return Subject{}, err
 	}
-	return Subject{Name: filepath.ToSlash(name), SHA256: digest, SizeBytes: size, Path: options.Path}, nil
+	return Subject{Name: name, SHA256: digest, SizeBytes: size, Path: options.Path}, nil
+}
+
+func SubjectFromBytes(name string, body []byte) (Subject, error) {
+	cleanName, err := cleanSubjectName(name)
+	if err != nil {
+		return Subject{}, err
+	}
+	return Subject{Name: cleanName, SHA256: SHA256Bytes(body), SizeBytes: int64(len(body))}, nil
+}
+
+func cleanSubjectName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("subject name is required")
+	}
+	if name == "." || name == string(filepath.Separator) || strings.Contains(name, "\x00") || strings.Contains(filepath.ToSlash(name), "../") || strings.HasPrefix(filepath.ToSlash(name), "../") || strings.HasPrefix(filepath.ToSlash(name), "/") {
+		return "", fmt.Errorf("unsafe subject name %q", name)
+	}
+	return filepath.ToSlash(name), nil
 }
 
 func ValidateGGUF(path string) error {
