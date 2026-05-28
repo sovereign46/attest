@@ -40,6 +40,27 @@ func TestEndToEndSmallGGUFFullQuorumGreen(t *testing.T) {
 	}
 }
 
+func TestProductionModeRefusesMissingTransparency(t *testing.T) {
+	fixture := newSignedFixture(t, 0)
+	fixture.Bundle.Sigsum = nil
+
+	result, err := Verify(context.Background(), VerifyRequest{
+		Bundle:           fixture.Bundle,
+		Subjects:         []Subject{fixture.Subject},
+		TrustRoot:        fixture.TrustRoot,
+		ExpectedIdentity: fixture.IdentityPolicy,
+		Mode:             ModeProduction,
+		Now:              fixedTime.Add(time.Hour),
+		MaxWitnessAge:    24 * time.Hour,
+	})
+	if err == nil {
+		t.Fatalf("production mode should refuse missing transparency: %+v", result)
+	}
+	if result.State != StateRefused || result.Diagnostics[0].Code != "transparency-unavailable" {
+		t.Fatalf("unexpected production result: %+v", result)
+	}
+}
+
 func TestEndToEndSmallGGUFWithoutWitnessingIsYellowAndStrictFails(t *testing.T) {
 	fixture := newSignedFixture(t, 0)
 	fixture.Bundle.Sigsum = nil

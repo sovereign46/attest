@@ -64,6 +64,43 @@ func TestTransparencyStatusPolicyMatrix(t *testing.T) {
 	}
 }
 
+func TestProductionStrictStillRejectsNonTransparencyWarnings(t *testing.T) {
+	fixture := newSignedFixture(t, 3)
+	root := fixture.TrustRoot
+	root.TransparencyStatus = TransparencyStatus{State: TransparencyOffline, Since: fixedTime.Add(-time.Second), Reason: "planned maintenance"}
+	result, err := Verify(context.Background(), VerifyRequest{
+		Bundle:           fixture.Bundle,
+		Subjects:         []Subject{fixture.Subject},
+		TrustRoot:        root,
+		ExpectedIdentity: fixture.IdentityPolicy,
+		Mode:             ModeProduction,
+		Now:              fixedTime.Add(time.Hour),
+		MaxWitnessAge:    24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("production mode should allow non-transparency warning without strict: %v", err)
+	}
+	if result.State != StateWarning {
+		t.Fatalf("state = %s, want warning", result.State)
+	}
+	strictResult, err := Verify(context.Background(), VerifyRequest{
+		Bundle:           fixture.Bundle,
+		Subjects:         []Subject{fixture.Subject},
+		TrustRoot:        root,
+		ExpectedIdentity: fixture.IdentityPolicy,
+		Mode:             ModeProduction,
+		Strict:           true,
+		Now:              fixedTime.Add(time.Hour),
+		MaxWitnessAge:    24 * time.Hour,
+	})
+	if err == nil {
+		t.Fatalf("production+strict should reject non-transparency warning: %+v", strictResult)
+	}
+	if strictResult.State != StateWarning {
+		t.Fatalf("strict state = %s, want warning", strictResult.State)
+	}
+}
+
 func TestIdentityRevocationAllowsPriorSignature(t *testing.T) {
 	fixture := newSignedFixture(t, 3)
 	root := fixture.TrustRoot
@@ -100,6 +137,7 @@ func TestLiveSigsumOptionValidation(t *testing.T) {
 		name   string
 		option SigsumSignOptions
 	}{
+		{name: "invalid submit key", option: SigsumSignOptions{Policy: policyText, SubmitPrivateKey: "not-base64"}},
 		{name: "unknown policy name", option: SigsumSignOptions{PolicyName: "does-not-exist"}},
 		{name: "bad policy text", option: SigsumSignOptions{Policy: "not a policy\n"}},
 		{name: "rate limit domain without key", option: SigsumSignOptions{Policy: policyText, RateLimitDomain: "example.com"}},

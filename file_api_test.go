@@ -3,6 +3,7 @@ package attest
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -45,6 +46,38 @@ func TestBundleAndTrustRootFileIO(t *testing.T) {
 	}
 	if got := rootInfo.Mode().Perm(); got != 0o644 {
 		t.Fatalf("trust root mode = %o, want 644", got)
+	}
+}
+
+func TestPrivateKeyFileHardening(t *testing.T) {
+	pair := mustKeyPair(t)
+	root := t.TempDir()
+	weak := filepath.Join(root, "weak.private")
+	if err := os.WriteFile(weak, []byte(pair.PrivateKey+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(weak, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadPrivateKeyFile(weak); err == nil {
+		t.Fatal("ReadPrivateKeyFile accepted group/world-readable private key")
+	}
+	if err := writeFilePrivate(weak, []byte(pair.PrivateKey+"\n"), 0o600); err == nil {
+		t.Fatal("writeFilePrivate overwrote weak private key target")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink permissions vary on windows")
+	}
+	target := filepath.Join(root, "target.private")
+	if err := os.WriteFile(target, []byte(pair.PrivateKey+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link.private")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadPrivateKeyFile(link); err == nil {
+		t.Fatal("ReadPrivateKeyFile accepted private key symlink")
 	}
 }
 

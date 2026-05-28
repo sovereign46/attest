@@ -2,13 +2,13 @@
 
 Go module and CLI for Sovereign46 model attestation verification.
 
-Current implementation signs GGUF model artifacts with an offline Ed25519 key, wraps the signature in a DSSE/in-toto-style bundle, and optionally embeds a Sigsum proof with witness cosignatures. Verification is tri-state:
+Current implementation signs GGUF model artifacts with an offline Ed25519 key, wraps the signature in a DSSE/in-toto-style bundle, and optionally embeds a Sigsum proof with witness cosignatures. Production Sigsum workflows should use a separate Sigsum submit key so the release signing key does not perform network submission. Verification is tri-state:
 
 - `trusted`: signature, attestation, identity, trust metadata, Sigsum proof, and witness quorum pass.
 - `warning`: signature/attestation pass, but transparency is missing, stale, below quorum, or Sovereign46-published status is degraded/offline. Default CLI mode exits 0.
 - `refused`: signature, attestation, identity, digest, revocation, or compromised-status policy fails. CLI exits non-zero.
 
-`--strict` turns `warning` into a non-zero exit.
+`--strict` turns `warning` into a non-zero exit. `S46_ATTEST_STRICT=1` enforces the same behavior for deployment environments. `--production` / `S46_ATTEST_PRODUCTION=1` fail closed with `refused` on missing, invalid, or stale transparency.
 
 ## CLI quick start
 
@@ -26,6 +26,8 @@ go run ./cmd/s46-attest sign \
   --private-key-file .tmp/attest-dev/signing.private \
   --identity-issuer https://issuer.s46.dev \
   --identity-subject repo:sovereign46/models:ref:refs/heads/main \
+  --predicate-kind release \
+  --sigsum-submit-private-key-file .tmp/attest-dev/sigsum-submit.private \
   --sigsum-log-private-key-file .tmp/attest-dev/log.private \
   --sigsum-witness-private-key-file .tmp/attest-dev/witness-1.private \
   --sigsum-witness-private-key-file .tmp/attest-dev/witness-2.private \
@@ -49,13 +51,18 @@ go run ./cmd/s46-attest keygen \
   --private-key-file .tmp/live-signing.private \
   --public-key-file .tmp/live-signing.public
 
+go run ./cmd/s46-attest keygen \
+  --private-key-file .tmp/live-submit.private \
+  --public-key-file .tmp/live-submit.public
+
 go run ./cmd/s46-attest trust-root \
   --out .tmp/live-trust-root.json \
   --key-id s46-build-prod \
   --public-key-file .tmp/live-signing.public \
   --identity-issuer https://issuer.s46.dev \
   --identity-subject repo:sovereign46/models:ref:refs/heads/main \
-  --sigsum-policy sigsum-test1-2025
+  --sigsum-policy sigsum-test1-2025 \
+  --sigsum-submit-public-key-file .tmp/live-submit.public
 
 go run ./cmd/s46-attest sign \
   --file .tmp/tiny.gguf \
@@ -64,6 +71,7 @@ go run ./cmd/s46-attest sign \
   --private-key-file .tmp/live-signing.private \
   --identity-issuer https://issuer.s46.dev \
   --identity-subject repo:sovereign46/models:ref:refs/heads/main \
+  --sigsum-submit-private-key-file .tmp/live-submit.private \
   --sigsum-policy sigsum-test1-2025
 
 go run ./cmd/s46-attest verify \
@@ -72,7 +80,8 @@ go run ./cmd/s46-attest verify \
   --trust-root .tmp/live-trust-root.json \
   --key-id s46-build-prod \
   --identity-issuer https://issuer.s46.dev \
-  --identity-subject repo:sovereign46/models:ref:refs/heads/main
+  --identity-subject repo:sovereign46/models:ref:refs/heads/main \
+  --production
 ```
 
 Inspect the public Sigsum proof embedded in the bundle:
@@ -113,6 +122,11 @@ bundle, err := attest.Sign(ctx, attest.SignOptions{
     PrivateKey: privateKeyBase64,
     KeyID: "s46-build-prod",
     Identity: attest.Identity{Issuer: issuer, Subject: subjectID},
+    PredicateKind: attest.PredicateKindRelease,
+    Sigsum: &attest.SigsumSignOptions{
+        SubmitPrivateKey: submitPrivateKeyBase64,
+        PolicyName: "sigsum-test1-2025",
+    },
 })
 
 result, err := attest.Verify(ctx, attest.VerifyRequest{
@@ -120,9 +134,26 @@ result, err := attest.Verify(ctx, attest.VerifyRequest{
     Subjects: []attest.Subject{subject},
     TrustRoot: root,
     ExpectedIdentity: attest.IdentityPolicy{KeyID: "s46-build-prod", Issuer: issuer, Subject: subjectID},
-    Mode: attest.ModeStrict,
+    Mode: attest.ModeProduction,
 })
 ```
+
+### Predicate semantics
+
+Bundles carry an explicit typed predicate kind:
+
+- `release`: normal model artifact release.
+- `advisory`: signed security or policy advisory; requires `advisory.id` and `advisory.summary`.
+- `yank`: signed withdrawal/yank notice; requires `yank.reason` and can name replacements.
+
+CLI signing accepts `--predicate-kind release|advisory|yank`, plus `--release-channel`, `--advisory-*`, and `--yank-*` detail flags. CLI verification also accepts `--predicate-kind`; it defaults to `release` so deployment gates do not accept advisory/yank bundles as release attestations unless explicitly requested.
+
+## Security model notes
+
+- Trust roots are unsigned JSON in this package. Production deployments should distribute them through a TUF-signed, rollback-protected channel and may set `expires` for additional freshness enforcement.
+- A `policyName` in a trust root is accepted only when the resolved Sigsum policy text is embedded, avoiding mutable remote policy lookup during verification.
+- Signing identities are static-key authorization constraints in the trust root and verifier request. They are not Fulcio/OIDC keyless identities.
+- GGUF validation is a header sanity check, not model-content scanning.
 
 ## Tests
 
@@ -137,4 +168,4 @@ go test -run '^$' -fuzz=FuzzParseTrustRoot -fuzztime=30s .
 go test -run '^$' -fuzz=FuzzVerifyBytes -fuzztime=30s .
 ```
 
-The test suite includes Sigstore-semantics DSSE/in-toto tests, malformed bundle/trust-root parser tests, Sigsum quorum/staleness/corruption tests, embedded-policy and live-log tests, TUF-style transparency status tests, identity revocation tests, fuzz targets, strict/default CLI tests, and end-to-end CLI tests against a tiny GGUF fixture.
+The test suite includes Sigstore-semantics DSSE/in-toto tests, malformed bundle/trust-root parser tests, Sigsum quorum/staleness/corruption and separate-submit-key tests, embedded-policy and live-log tests, TUF-style transparency status and trust-root expiry tests, identity revocation tests, typed release/advisory/yank predicate tests, private-key file hardening tests, fuzz targets, production/strict/default CLI tests, and end-to-end CLI tests against a tiny GGUF fixture.

@@ -56,6 +56,7 @@ func TestLiveSigsumSubmissionToTestLog(t *testing.T) {
 		t.Fatal(err)
 	}
 	signing := mustKeyPair(t)
+	submit := mustKeyPair(t)
 	identity := Identity{Issuer: "https://issuer.s46.dev", Subject: "repo:sovereign46/models:ref:refs/heads/main"}
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
@@ -66,10 +67,11 @@ func TestLiveSigsumSubmissionToTestLog(t *testing.T) {
 		Identity:   identity,
 		SignedAt:   fixedTime,
 		Sigsum: &SigsumSignOptions{
-			PolicyName:     "sigsum-test1-2025",
-			Timeout:        4 * time.Minute,
-			RequestTimeout: 30 * time.Second,
-			PollDelay:      2 * time.Second,
+			SubmitPrivateKey: submit.PrivateKey,
+			PolicyName:       "sigsum-test1-2025",
+			Timeout:          4 * time.Minute,
+			RequestTimeout:   30 * time.Second,
+			PollDelay:        2 * time.Second,
 		},
 	})
 	if err != nil {
@@ -78,6 +80,7 @@ func TestLiveSigsumSubmissionToTestLog(t *testing.T) {
 	root, err := NewTrustRoot(TrustRootOptions{
 		SigningKeys:      []TrustedKey{{KeyID: "s46-build-prod", PublicKey: signing.PublicKey, Identity: identity}},
 		SigsumPolicyName: "sigsum-test1-2025",
+		SigsumSubmitKeys: []SigsumSubmitKey{{KeyID: "sigsum-submit-1", PublicKey: submit.PublicKey, SigningKeyID: "s46-build-prod", Identity: identity}},
 	})
 	if err != nil {
 		t.Fatal(err)

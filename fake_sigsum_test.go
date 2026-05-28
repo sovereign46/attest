@@ -27,6 +27,7 @@ func TestLiveSigsumSubmissionAgainstFakeLog(t *testing.T) {
 		t.Fatal(err)
 	}
 	signing := mustKeyPair(t)
+	submit := mustKeyPair(t)
 	identity := Identity{Issuer: "https://issuer.s46.dev", Subject: "repo:sovereign46/models:ref:refs/heads/main"}
 	bundle, err := Sign(context.Background(), SignOptions{
 		Subjects:   []Subject{subject},
@@ -35,18 +36,20 @@ func TestLiveSigsumSubmissionAgainstFakeLog(t *testing.T) {
 		Identity:   identity,
 		SignedAt:   fixedTime,
 		Sigsum: &SigsumSignOptions{
-			Policy:         log.policyText,
-			Timeout:        time.Minute,
-			RequestTimeout: 5 * time.Second,
-			PollDelay:      time.Millisecond,
+			SubmitPrivateKey: submit.PrivateKey,
+			Policy:           log.policyText,
+			Timeout:          time.Minute,
+			RequestTimeout:   5 * time.Second,
+			PollDelay:        time.Millisecond,
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	root, err := NewTrustRoot(TrustRootOptions{
-		SigningKeys:  []TrustedKey{{KeyID: "s46-build-prod", PublicKey: signing.PublicKey, Identity: identity}},
-		SigsumPolicy: log.policyText,
+		SigningKeys:      []TrustedKey{{KeyID: "s46-build-prod", PublicKey: signing.PublicKey, Identity: identity}},
+		SigsumPolicy:     log.policyText,
+		SigsumSubmitKeys: []SigsumSubmitKey{{KeyID: "sigsum-submit-1", PublicKey: submit.PublicKey, SigningKeyID: "s46-build-prod", Identity: identity}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -67,6 +70,9 @@ func TestLiveSigsumSubmissionAgainstFakeLog(t *testing.T) {
 	}
 	if result.Transparency.VerifiedWitnesses != 3 {
 		t.Fatalf("verified witnesses = %d, want 3", result.Transparency.VerifiedWitnesses)
+	}
+	if result.Transparency.SubmitKeyID != "sigsum-submit-1" {
+		t.Fatalf("submit key id = %q, want sigsum-submit-1", result.Transparency.SubmitKeyID)
 	}
 	if !strings.Contains(bundle.Sigsum.Proof, "log="+log.logKeyHash) {
 		t.Fatalf("proof does not contain fake log hash %s:\n%s", log.logKeyHash, bundle.Sigsum.Proof)

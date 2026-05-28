@@ -31,6 +31,58 @@ func TestCLIUsageAndValidationErrors(t *testing.T) {
 	}
 }
 
+func TestCLITrustRootRejectsSubmitKeyWithoutSigsumConfig(t *testing.T) {
+	root := t.TempDir()
+	publicKey := filepath.Join(root, "signing.public")
+	submitPublicKey := filepath.Join(root, "submit.public")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"keygen", "--public-key-file", publicKey}, &stdout, &stderr); code != 0 {
+		t.Fatalf("signing keygen exit %d stderr=%s", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"keygen", "--public-key-file", submitPublicKey}, &stdout, &stderr); code != 0 {
+		t.Fatalf("submit keygen exit %d stderr=%s", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code := run([]string{
+		"trust-root",
+		"--out", filepath.Join(root, "trust-root.json"),
+		"--key-id", "s46-build-prod",
+		"--public-key-file", publicKey,
+		"--identity-issuer", "https://issuer.s46.dev",
+		"--identity-subject", "repo:sovereign46/models:ref:refs/heads/main",
+		"--sigsum-submit-public-key-file", submitPublicKey,
+	}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("trust-root submit-only exit %d, want 1; stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestCLITrustRootRequiresIdentityUnlessAllowed(t *testing.T) {
+	root := t.TempDir()
+	privateKey := filepath.Join(root, "signing.private")
+	publicKey := filepath.Join(root, "signing.public")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"keygen", "--private-key-file", privateKey, "--public-key-file", publicKey}, &stdout, &stderr); code != 0 {
+		t.Fatalf("keygen exit %d stderr=%s", code, stderr.String())
+	}
+	trustRoot := filepath.Join(root, "trust-root.json")
+	stdout.Reset()
+	stderr.Reset()
+	code := run([]string{"trust-root", "--out", trustRoot, "--key-id", "s46-build-prod", "--public-key-file", publicKey}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("trust-root without identity exit %d, want 2; stderr=%s", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"trust-root", "--out", trustRoot, "--key-id", "s46-build-prod", "--public-key-file", publicKey, "--allow-empty-identity"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("trust-root --allow-empty-identity exit %d stderr=%s", code, stderr.String())
+	}
+}
+
 func TestCLIKeygenStdoutAndFileErrors(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"keygen"}, &stdout, &stderr); code != 0 {
@@ -48,6 +100,51 @@ func TestCLIKeygenStdoutAndFileErrors(t *testing.T) {
 	code := run([]string{"keygen", "--private-key-file", filepath.Join(badParent, "key")}, &stdout, &stderr)
 	if code != 1 {
 		t.Fatalf("keygen invalid path exit %d, want 1; stderr=%s", code, stderr.String())
+	}
+	weak := filepath.Join(t.TempDir(), "weak.private")
+	if err := os.WriteFile(weak, []byte("old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(weak, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"keygen", "--private-key-file", weak}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("keygen weak existing private file exit %d, want 1; stderr=%s", code, stderr.String())
+	}
+}
+
+func TestCLISignCheapValidationRunsBeforeFileAccess(t *testing.T) {
+	root := t.TempDir()
+	devDir := filepath.Join(root, "dev")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"dev-init", "--dir", devDir}, &stdout, &stderr); code != 0 {
+		t.Fatalf("dev-init exit %d stderr=%s", code, stderr.String())
+	}
+	missingModel := filepath.Join(root, "missing.gguf")
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{
+			name: "bad predicate kind before file stat",
+			args: []string{"sign", "--file", missingModel, "--bundle", filepath.Join(root, "bundle.json"), "--key-id", "s46-build-prod", "--private-key-file", filepath.Join(devDir, "signing.private"), "--predicate-kind", "rollback"},
+		},
+		{
+			name: "submit key without sigsum before file stat",
+			args: []string{"sign", "--file", missingModel, "--bundle", filepath.Join(root, "bundle.json"), "--key-id", "s46-build-prod", "--private-key-file", filepath.Join(devDir, "signing.private"), "--sigsum-submit-private-key-file", filepath.Join(devDir, "sigsum-submit.private")},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stdout.Reset()
+			stderr.Reset()
+			if code := run(tt.args, &stdout, &stderr); code != 2 {
+				t.Fatalf("exit = %d, want 2; stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+			}
+		})
 	}
 }
 
@@ -74,6 +171,21 @@ func TestCLISignValidationErrors(t *testing.T) {
 			name: "partial local sigsum",
 			args: []string{"sign", "--file", model, "--bundle", filepath.Join(root, "bundle.json"), "--key-id", "s46-build-prod", "--private-key-file", filepath.Join(devDir, "signing.private"), "--sigsum-log-private-key-file", filepath.Join(devDir, "log.private")},
 			want: 2,
+		},
+		{
+			name: "submit key without sigsum",
+			args: []string{"sign", "--file", model, "--bundle", filepath.Join(root, "bundle.json"), "--key-id", "s46-build-prod", "--private-key-file", filepath.Join(devDir, "signing.private"), "--sigsum-submit-private-key-file", filepath.Join(devDir, "sigsum-submit.private")},
+			want: 2,
+		},
+		{
+			name: "unsupported predicate kind",
+			args: []string{"sign", "--file", model, "--bundle", filepath.Join(root, "bundle.json"), "--key-id", "s46-build-prod", "--private-key-file", filepath.Join(devDir, "signing.private"), "--predicate-kind", "rollback"},
+			want: 2,
+		},
+		{
+			name: "advisory missing required details",
+			args: []string{"sign", "--file", model, "--bundle", filepath.Join(root, "bundle.json"), "--key-id", "s46-build-prod", "--private-key-file", filepath.Join(devDir, "signing.private"), "--predicate-kind", "advisory", "--advisory-id", "S46-2026-0001"},
+			want: 1,
 		},
 		{
 			name: "missing private key file",

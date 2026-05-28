@@ -8,6 +8,9 @@ const (
 	InTotoPayloadType          = "application/vnd.in-toto+json"
 	InTotoStatementType        = "https://in-toto.io/Statement/v1"
 	S46PredicateType           = "https://sovereign46.dev/attestation/v1"
+	S46ReleaseBuildType        = "https://sovereign46.dev/buildtypes/model-release/v1"
+	S46AdvisoryBuildType       = "https://sovereign46.dev/buildtypes/model-advisory/v1"
+	S46YankBuildType           = "https://sovereign46.dev/buildtypes/model-yank/v1"
 	SignatureAlgorithm         = "ed25519"
 	DigestAlgorithmSHA256      = "sha256"
 	DefaultWitnessMaxAge       = 24 * time.Hour
@@ -28,8 +31,9 @@ const (
 type Mode string
 
 const (
-	ModeDefault Mode = "default"
-	ModeStrict  Mode = "strict"
+	ModeDefault    Mode = "default"
+	ModeStrict     Mode = "strict"
+	ModeProduction Mode = "production"
 )
 
 type TransparencyState string
@@ -95,45 +99,87 @@ type ResourceDescriptor struct {
 	Size   int64             `json:"size,omitempty"`
 }
 
+type PredicateKind string
+
+const (
+	PredicateKindRelease  PredicateKind = "release"
+	PredicateKindAdvisory PredicateKind = "advisory"
+	PredicateKindYank     PredicateKind = "yank"
+)
+
 type Predicate struct {
-	BuildType string    `json:"buildType"`
-	SignedAt  time.Time `json:"signedAt"`
-	Signer    Signer    `json:"signer"`
+	BuildType string             `json:"buildType"`
+	Kind      PredicateKind      `json:"kind"`
+	Release   *ReleasePredicate  `json:"release,omitempty"`
+	Advisory  *AdvisoryPredicate `json:"advisory,omitempty"`
+	Yank      *YankPredicate     `json:"yank,omitempty"`
+	SignedAt  time.Time          `json:"signedAt"`
+	Signer    Signer             `json:"signer"`
+}
+
+type ReleasePredicate struct {
+	Channel string `json:"channel,omitempty"`
+}
+
+type AdvisoryPredicate struct {
+	ID       string `json:"id"`
+	Severity string `json:"severity,omitempty"`
+	Summary  string `json:"summary"`
+	URL      string `json:"url,omitempty"`
+}
+
+type YankPredicate struct {
+	Reason     string   `json:"reason"`
+	ReplacedBy []string `json:"replacedBy,omitempty"`
 }
 
 type Signer struct {
 	KeyID     string   `json:"keyId"`
 	Algorithm string   `json:"algorithm"`
-	Identity  Identity `json:"identity,omitempty"`
+	Identity  Identity `json:"identity,omitempty,omitzero"`
 }
 
 type TrustRoot struct {
-	Schema              int                  `json:"schema"`
-	SigningKeys         []TrustedKey         `json:"signingKeys"`
-	Sigsum              SigsumTrustRoot      `json:"sigsum,omitempty"`
-	TransparencyStatus  TransparencyStatus   `json:"transparencyStatus,omitempty"`
-	IdentityRevocations []IdentityRevocation `json:"identityRevocations,omitempty"`
+	Schema                 int                  `json:"schema"`
+	SigningKeys            []TrustedKey         `json:"signingKeys"`
+	Sigsum                 SigsumTrustRoot      `json:"sigsum,omitempty,omitzero"`
+	TransparencyStatus     TransparencyStatus   `json:"transparencyStatus,omitempty,omitzero"`
+	IdentityRevocations    []IdentityRevocation `json:"identityRevocations,omitempty"`
+	Expires                time.Time            `json:"expires,omitempty,omitzero"`
+	RequireSigningIdentity bool                 `json:"requireSigningIdentity,omitempty"`
+
+	validated             bool
+	validationFingerprint string
+	compiledSigsum        *compiledSigsumTrustRoot
 }
 
 type TrustedKey struct {
 	KeyID     string   `json:"keyId"`
 	PublicKey string   `json:"publicKey"`
 	URL       string   `json:"url,omitempty"`
-	Identity  Identity `json:"identity,omitempty"`
+	Identity  Identity `json:"identity,omitempty,omitzero"`
 }
 
 type SigsumTrustRoot struct {
-	PolicyName string       `json:"policyName,omitempty"`
-	Policy     string       `json:"policy,omitempty"`
-	Logs       []TrustedKey `json:"logs,omitempty"`
-	Witnesses  []TrustedKey `json:"witnesses,omitempty"`
-	Quorum     int          `json:"quorum,omitempty"`
+	PolicyName string            `json:"policyName,omitempty"`
+	Policy     string            `json:"policy,omitempty"`
+	Logs       []TrustedKey      `json:"logs,omitempty"`
+	Witnesses  []TrustedKey      `json:"witnesses,omitempty"`
+	SubmitKeys []SigsumSubmitKey `json:"submitKeys,omitempty"`
+	Quorum     int               `json:"quorum,omitempty"`
+}
+
+type SigsumSubmitKey struct {
+	KeyID        string   `json:"keyId"`
+	PublicKey    string   `json:"publicKey"`
+	SigningKeyID string   `json:"signingKeyId"`
+	Identity     Identity `json:"identity,omitempty,omitzero"`
 }
 
 type TransparencyStatus struct {
 	State  TransparencyState `json:"state,omitempty"`
 	Reason string            `json:"reason,omitempty"`
-	Since  time.Time         `json:"since,omitempty"`
+	Since  time.Time         `json:"since,omitempty,omitzero"`
 }
 
 type IdentityRevocation struct {
@@ -148,15 +194,23 @@ type SigsumProof struct {
 }
 
 type SignOptions struct {
-	Subjects   []Subject
-	PrivateKey string
-	KeyID      string
-	Identity   Identity
-	SignedAt   time.Time
-	Sigsum     *SigsumSignOptions
+	Subjects      []Subject
+	PrivateKey    string
+	KeyID         string
+	Identity      Identity
+	SignedAt      time.Time
+	PredicateKind PredicateKind
+	Release       ReleasePredicate
+	Advisory      AdvisoryPredicate
+	Yank          YankPredicate
+	Sigsum        *SigsumSignOptions
 }
 
 type SigsumSignOptions struct {
+	// Optional Sigsum submit key. If empty, the signing key is reused for legacy
+	// bundles; production workflows should provide a separate submit key.
+	SubmitPrivateKey string
+
 	// Live Sigsum submission. Set PolicyName or Policy to submit to a real log.
 	PolicyName          string
 	Policy              string
@@ -175,13 +229,15 @@ type SigsumSignOptions struct {
 }
 
 type VerifyRequest struct {
-	Bundle           Bundle
-	Subjects         []Subject
-	TrustRoot        TrustRoot
-	ExpectedIdentity IdentityPolicy
-	Mode             Mode
-	Now              time.Time
-	MaxWitnessAge    time.Duration
+	Bundle                Bundle
+	Subjects              []Subject
+	TrustRoot             TrustRoot
+	ExpectedIdentity      IdentityPolicy
+	ExpectedPredicateKind PredicateKind
+	Mode                  Mode
+	Strict                bool
+	Now                   time.Time
+	MaxWitnessAge         time.Duration
 }
 
 type VerifyResult struct {
@@ -191,9 +247,10 @@ type VerifyResult struct {
 	Attestation     AttestationResult  `json:"attestation"`
 	Transparency    TransparencyResult `json:"transparency"`
 	TrustStatus     TrustStatusResult  `json:"trustStatus"`
-	SignatureTime   time.Time          `json:"signatureTime,omitempty"`
+	PredicateKind   PredicateKind      `json:"predicateKind,omitempty"`
+	SignatureTime   time.Time          `json:"signatureTime,omitempty,omitzero"`
 	SigningKeyID    string             `json:"signingKeyId,omitempty"`
-	SigningIdentity Identity           `json:"signingIdentity,omitempty"`
+	SigningIdentity Identity           `json:"signingIdentity,omitempty,omitzero"`
 }
 
 type Diagnostic struct {
@@ -220,7 +277,8 @@ type TransparencyResult struct {
 	Quorum             int       `json:"quorum,omitempty"`
 	QuorumPolicy       string    `json:"quorumPolicy,omitempty"`
 	LogKeyID           string    `json:"logKeyId,omitempty"`
-	WitnessedAt        time.Time `json:"witnessedAt,omitempty"`
+	SubmitKeyID        string    `json:"submitKeyId,omitempty"`
+	WitnessedAt        time.Time `json:"witnessedAt,omitempty,omitzero"`
 	Stale              bool      `json:"stale,omitempty"`
 	VerificationDetail string    `json:"verificationDetail,omitempty"`
 }
@@ -228,7 +286,7 @@ type TransparencyResult struct {
 type TrustStatusResult struct {
 	State  TransparencyState `json:"state,omitempty"`
 	Reason string            `json:"reason,omitempty"`
-	Since  time.Time         `json:"since,omitempty"`
+	Since  time.Time         `json:"since,omitempty,omitzero"`
 }
 
 type SubjectFileOptions struct {

@@ -51,19 +51,15 @@ func Sign(ctx context.Context, options SignOptions) (Bundle, error) {
 	if signedAt.IsZero() {
 		signedAt = time.Now().UTC().Truncate(time.Second)
 	}
+	predicate, err := predicateFromSignOptions(options, signedAt)
+	if err != nil {
+		return Bundle{}, err
+	}
 	statement := Statement{
 		Type:          InTotoStatementType,
 		Subject:       resourcesFromSubjects(subjects),
 		PredicateType: S46PredicateType,
-		Predicate: Predicate{
-			BuildType: "https://sovereign46.dev/buildtypes/model-release/v1",
-			SignedAt:  signedAt,
-			Signer: Signer{
-				KeyID:     options.KeyID,
-				Algorithm: SignatureAlgorithm,
-				Identity:  options.Identity,
-			},
-		},
+		Predicate:     predicate,
 	}
 	payload, err := canonicalJSON(statement)
 	if err != nil {
@@ -89,6 +85,73 @@ func Sign(ctx context.Context, options SignOptions) (Bundle, error) {
 	return bundle, nil
 }
 
+func predicateFromSignOptions(options SignOptions, signedAt time.Time) (Predicate, error) {
+	kind := options.PredicateKind
+	if kind == "" {
+		kind = PredicateKindRelease
+	}
+	if err := validateSelectedPredicateDetails(kind, options); err != nil {
+		return Predicate{}, err
+	}
+	predicate := Predicate{
+		BuildType: buildTypeForPredicateKind(kind),
+		Kind:      kind,
+		SignedAt:  signedAt,
+		Signer: Signer{
+			KeyID:     options.KeyID,
+			Algorithm: SignatureAlgorithm,
+			Identity:  options.Identity,
+		},
+	}
+	switch kind {
+	case PredicateKindRelease:
+		release := options.Release
+		predicate.Release = &release
+	case PredicateKindAdvisory:
+		advisory := options.Advisory
+		predicate.Advisory = &advisory
+	case PredicateKindYank:
+		yank := options.Yank
+		predicate.Yank = &yank
+	default:
+		return Predicate{}, fmt.Errorf("unsupported predicate kind %q", kind)
+	}
+	if err := validatePredicateSemantics(predicate); err != nil {
+		return Predicate{}, err
+	}
+	return predicate, nil
+}
+
+func validateSelectedPredicateDetails(kind PredicateKind, options SignOptions) error {
+	switch kind {
+	case PredicateKindRelease:
+		if !advisoryPredicateEmpty(options.Advisory) || !yankPredicateEmpty(options.Yank) {
+			return fmt.Errorf("release predicate must not include advisory or yank details")
+		}
+	case PredicateKindAdvisory:
+		if !releasePredicateEmpty(options.Release) || !yankPredicateEmpty(options.Yank) {
+			return fmt.Errorf("advisory predicate must not include release or yank details")
+		}
+	case PredicateKindYank:
+		if !releasePredicateEmpty(options.Release) || !advisoryPredicateEmpty(options.Advisory) {
+			return fmt.Errorf("yank predicate must not include release or advisory details")
+		}
+	}
+	return nil
+}
+
+func releasePredicateEmpty(predicate ReleasePredicate) bool {
+	return predicate.Channel == ""
+}
+
+func advisoryPredicateEmpty(predicate AdvisoryPredicate) bool {
+	return predicate.ID == "" && predicate.Severity == "" && predicate.Summary == "" && predicate.URL == ""
+}
+
+func yankPredicateEmpty(predicate YankPredicate) bool {
+	return predicate.Reason == "" && len(predicate.ReplacedBy) == 0
+}
+
 func resourcesFromSubjects(subjects []Subject) []ResourceDescriptor {
 	resources := make([]ResourceDescriptor, 0, len(subjects))
 	for _, subject := range subjects {
@@ -107,7 +170,18 @@ func pae(payloadType string, payload []byte) []byte {
 	return []byte(fmt.Sprintf("DSSEv1 %d %s %d %s", len(payloadType), payloadType, len(payload), payload))
 }
 
-func createSigsumProof(ctx context.Context, envelope DSSEEnvelope, submitPrivateKey ed25519.PrivateKey, options SigsumSignOptions) (string, error) {
+func createSigsumProof(ctx context.Context, envelope DSSEEnvelope, signingPrivateKey ed25519.PrivateKey, options SigsumSignOptions) (string, error) {
+	submitPrivateKey := signingPrivateKey
+	if strings.TrimSpace(options.SubmitPrivateKey) != "" {
+		parsedSubmitKey, err := ParsePrivateKey(options.SubmitPrivateKey)
+		if err != nil {
+			return "", fmt.Errorf("sigsum submit private key: %w", err)
+		}
+		if bytes.Equal(parsedSubmitKey.Public().(ed25519.PublicKey), signingPrivateKey.Public().(ed25519.PublicKey)) {
+			return "", fmt.Errorf("sigsum submit private key must differ from signing private key")
+		}
+		submitPrivateKey = parsedSubmitKey
+	}
 	submitSigner, err := sigsumSignerFromEd25519(submitPrivateKey)
 	if err != nil {
 		return "", err

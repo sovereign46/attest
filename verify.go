@@ -46,6 +46,16 @@ func (v *verification) run() (VerifyResult, error) {
 	if v.req.Mode == "" {
 		v.req.Mode = ModeDefault
 	}
+	trustRoot, err := validateTrustRoot(v.req.TrustRoot)
+	if err != nil {
+		v.refuse("trust-root-invalid", err.Error())
+		return v.finish()
+	}
+	v.req.TrustRoot = trustRoot
+	if !v.req.TrustRoot.Expires.IsZero() && !v.req.Now.Before(v.req.TrustRoot.Expires) {
+		v.refuse("trust-root-expired", fmt.Sprintf("trust root expired at %s", v.req.TrustRoot.Expires.Format(time.RFC3339)))
+		return v.finish()
+	}
 	if err := validateBundleShape(v.req.Bundle); err != nil {
 		v.refuse("bundle-invalid", err.Error())
 		return v.finish()
@@ -64,8 +74,13 @@ func (v *verification) run() (VerifyResult, error) {
 		v.refuse("signature-invalid", err.Error())
 		return v.finish()
 	}
+	if err := v.verifyPredicateKind(statement); err != nil {
+		v.refuse("predicate-kind-mismatch", err.Error())
+		return v.finish()
+	}
 	v.result.Signature = SignatureResult{Valid: true, Algorithm: SignatureAlgorithm, KeyID: trustedKey.KeyID}
 	v.result.SigningKeyID = trustedKey.KeyID
+	v.result.PredicateKind = statement.Predicate.Kind
 	v.result.SignatureTime = statement.Predicate.SignedAt
 	v.result.SigningIdentity = statement.Predicate.Signer.Identity
 	if statement.Predicate.SignedAt.After(v.req.Now.Add(DefaultSignatureFutureSkew)) {
@@ -80,12 +95,12 @@ func (v *verification) run() (VerifyResult, error) {
 		v.refuse("identity-revoked", err.Error())
 		return v.finish()
 	}
-	transparency := verifySigsumTransparency(v.req.Bundle, v.req.TrustRoot, publicKey, v.req.Now, v.req.MaxWitnessAge)
+	transparency := verifySigsumTransparency(v.req.Bundle, v.req.TrustRoot, trustedKey, publicKey, statement.Predicate.Signer.Identity, v.req.Now, v.req.MaxWitnessAge)
 	v.result.Transparency = transparency
 	if !transparency.Valid {
-		v.warn("transparency-unavailable", transparency.VerificationDetail)
+		v.transparencyFailure("transparency-unavailable", transparency.VerificationDetail)
 	} else if transparency.Stale {
-		v.warn("transparency-stale", transparency.VerificationDetail)
+		v.transparencyFailure("transparency-stale", transparency.VerificationDetail)
 	}
 	return v.finish()
 }
@@ -119,7 +134,29 @@ func decodeAndValidateEnvelope(envelope DSSEEnvelope) ([]byte, Statement, error)
 	if statement.Predicate.SignedAt.IsZero() {
 		return nil, Statement{}, fmt.Errorf("predicate signedAt is required")
 	}
+	normalizeLegacyPredicate(&statement.Predicate)
+	if err := validatePredicateSemantics(statement.Predicate); err != nil {
+		return nil, Statement{}, err
+	}
 	return payload, statement, nil
+}
+
+func normalizeLegacyPredicate(predicate *Predicate) {
+	if predicate.Kind == "" && predicate.BuildType == S46ReleaseBuildType && predicate.Release == nil && predicate.Advisory == nil && predicate.Yank == nil {
+		predicate.Kind = PredicateKindRelease
+		predicate.Release = &ReleasePredicate{}
+	}
+}
+
+func (v *verification) verifyPredicateKind(statement Statement) error {
+	expected := v.req.ExpectedPredicateKind
+	if expected == "" {
+		expected = PredicateKindRelease
+	}
+	if statement.Predicate.Kind != expected {
+		return fmt.Errorf("predicate kind %q does not match expected %q", statement.Predicate.Kind, expected)
+	}
+	return nil
 }
 
 func (v *verification) verifyAttestation(statement Statement) error {
@@ -265,6 +302,14 @@ func (v *verification) refuse(code, message string) {
 	v.result.Diagnostics = append(v.result.Diagnostics, Diagnostic{Code: code, Severity: StateRefused, Message: message})
 }
 
+func (v *verification) transparencyFailure(code, message string) {
+	if v.req.Mode == ModeProduction {
+		v.refuse(code, message)
+		return
+	}
+	v.warn(code, message)
+}
+
 func (v *verification) warn(code, message string) {
 	if message == "" {
 		message = code
@@ -282,7 +327,7 @@ func (v *verification) finish() (VerifyResult, error) {
 	if v.result.State == StateRefused {
 		return v.result, &VerificationError{State: StateRefused, Message: diagnosticSummary(v.result.Diagnostics, "verification refused")}
 	}
-	if v.result.State == StateWarning && v.req.Mode == ModeStrict {
+	if v.result.State == StateWarning && (v.req.Mode == ModeStrict || v.req.Strict) {
 		return v.result, &VerificationError{State: StateWarning, Message: diagnosticSummary(v.result.Diagnostics, "verification warning rejected by strict mode")}
 	}
 	return v.result, nil

@@ -71,8 +71,9 @@ func ParseTrustRoot(body []byte) (TrustRoot, error) {
 	if root.Schema == 0 {
 		root.Schema = SchemaVersion
 	}
-	if root.Schema != SchemaVersion {
-		return TrustRoot{}, fmt.Errorf("unsupported trust root schema %d", root.Schema)
+	root, err := validateTrustRoot(root)
+	if err != nil {
+		return TrustRoot{}, err
 	}
 	return root, nil
 }
@@ -86,6 +87,9 @@ func LoadTrustRoot(path string) (TrustRoot, error) {
 }
 
 func WriteTrustRoot(path string, root TrustRoot) error {
+	if _, err := validateTrustRoot(root); err != nil {
+		return err
+	}
 	body, err := MarshalTrustRoot(root)
 	if err != nil {
 		return err

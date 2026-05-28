@@ -232,6 +232,8 @@ func mutateTrustRoot(root TrustRoot, mutate func(*TrustRoot)) TrustRoot {
 	mutated.SigningKeys = append([]TrustedKey(nil), root.SigningKeys...)
 	mutated.Sigsum.Logs = append([]TrustedKey(nil), root.Sigsum.Logs...)
 	mutated.Sigsum.Witnesses = append([]TrustedKey(nil), root.Sigsum.Witnesses...)
+	mutated.Sigsum.SubmitKeys = append([]SigsumSubmitKey(nil), root.Sigsum.SubmitKeys...)
+	mutated.IdentityRevocations = append([]IdentityRevocation(nil), root.IdentityRevocations...)
 	mutate(&mutated)
 	return mutated
 }

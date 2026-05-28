@@ -47,6 +47,9 @@ func ParsePublicKey(raw string) (ed25519.PublicKey, error) {
 }
 
 func ReadPrivateKeyFile(path string) (string, error) {
+	if err := validatePrivateKeyPath(path); err != nil {
+		return "", err
+	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return "", err

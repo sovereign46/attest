@@ -4,23 +4,29 @@ import (
 	"bytes"
 	"fmt"
 	"strings"
+	"time"
 
 	sigcrypto "sigsum.org/sigsum-go/pkg/crypto"
 	"sigsum.org/sigsum-go/pkg/policy"
 )
 
 type TrustRootOptions struct {
-	SigningKeys        []TrustedKey
-	SigsumPolicyName   string
-	SigsumPolicy       string
-	TransparencyStatus TransparencyStatus
+	SigningKeys            []TrustedKey
+	SigsumPolicyName       string
+	SigsumPolicy           string
+	SigsumSubmitKeys       []SigsumSubmitKey
+	TransparencyStatus     TransparencyStatus
+	Expires                time.Time
+	RequireSigningIdentity bool
 }
 
 func NewTrustRoot(options TrustRootOptions) (TrustRoot, error) {
 	root := TrustRoot{
-		Schema:             SchemaVersion,
-		SigningKeys:        append([]TrustedKey(nil), options.SigningKeys...),
-		TransparencyStatus: options.TransparencyStatus,
+		Schema:                 SchemaVersion,
+		SigningKeys:            append([]TrustedKey(nil), options.SigningKeys...),
+		TransparencyStatus:     options.TransparencyStatus,
+		Expires:                options.Expires,
+		RequireSigningIdentity: options.RequireSigningIdentity,
 	}
 	if root.TransparencyStatus.State == "" {
 		root.TransparencyStatus.State = TransparencyOperational
@@ -31,6 +37,11 @@ func NewTrustRoot(options TrustRootOptions) (TrustRoot, error) {
 			return TrustRoot{}, err
 		}
 		root.Sigsum = sigsumRoot
+	}
+	root.Sigsum.SubmitKeys = append([]SigsumSubmitKey(nil), options.SigsumSubmitKeys...)
+	root, err := validateTrustRoot(root)
+	if err != nil {
+		return TrustRoot{}, err
 	}
 	return root, nil
 }
