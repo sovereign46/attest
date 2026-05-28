@@ -82,7 +82,6 @@ func TestLiveSigsumSubmissionAgainstFakeLog(t *testing.T) {
 }
 
 type fakeSigsumLog struct {
-	t                  *testing.T
 	server             *httptest.Server
 	logSigner          *sigcrypto.Ed25519Signer
 	witnessSigners     []*sigcrypto.Ed25519Signer
@@ -100,7 +99,7 @@ func newFakeSigsumLog(t *testing.T, witnessCount int, quorum int) *fakeSigsumLog
 		t.Fatalf("invalid fake Sigsum quorum %d/%d", quorum, witnessCount)
 	}
 	logSigner := mustSigsumSigner(t)
-	fake := &fakeSigsumLog{t: t, logSigner: logSigner, tree: merkle.NewTree()}
+	fake := &fakeSigsumLog{logSigner: logSigner, tree: merkle.NewTree()}
 	seed := sigcrypto.HashBytes([]byte("fake-sigsum-existing-leaf"))
 	fake.tree.AddLeafHash(&seed)
 	for range witnessCount {
@@ -137,7 +136,11 @@ func (f *fakeSigsumLog) handle(w http.ResponseWriter, r *http.Request) {
 		f.tree.AddLeafHash(&leafHash)
 		w.WriteHeader(http.StatusOK)
 	case r.Method == http.MethodGet && r.URL.Path == "/get-tree-head":
-		cth := f.cosignedTreeHead()
+		cth, err := f.cosignedTreeHead()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		if err := cth.ToASCII(w); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -183,11 +186,11 @@ func (f *fakeSigsumLog) writeInclusionProof(w http.ResponseWriter, suffix string
 	}
 }
 
-func (f *fakeSigsumLog) cosignedTreeHead() types.CosignedTreeHead {
+func (f *fakeSigsumLog) cosignedTreeHead() (types.CosignedTreeHead, error) {
 	treeHead := types.TreeHead{Size: f.tree.Size(), RootHash: f.tree.GetRootHash()}
 	signedTreeHead, err := treeHead.Sign(f.logSigner)
 	if err != nil {
-		f.t.Fatal(err)
+		return types.CosignedTreeHead{}, err
 	}
 	logPublic := f.logSigner.Public()
 	origin := types.SigsumCheckpointOrigin(&logPublic)
@@ -196,11 +199,11 @@ func (f *fakeSigsumLog) cosignedTreeHead() types.CosignedTreeHead {
 		witnessPublic := witnessSigner.Public()
 		cosignature, err := treeHead.Cosign(witnessSigner, origin, uint64(fixedTime.Unix()))
 		if err != nil {
-			f.t.Fatal(err)
+			return types.CosignedTreeHead{}, err
 		}
 		cosignatures[sigcrypto.HashBytes(witnessPublic[:])] = cosignature
 	}
-	return types.CosignedTreeHead{SignedTreeHead: signedTreeHead, Cosignatures: cosignatures}
+	return types.CosignedTreeHead{SignedTreeHead: signedTreeHead, Cosignatures: cosignatures}, nil
 }
 
 func (f *fakeSigsumLog) policy(quorum int) string {

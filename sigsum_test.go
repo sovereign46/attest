@@ -116,7 +116,11 @@ func trustedKeyHex(t *testing.T, key TrustedKey) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return hex.EncodeToString(publicKey)
+	sigsumKey, err := sigsumPublicKeyFromEd25519(publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return hex.EncodeToString(sigsumKey[:])
 }
 
 func TestSigsumCorruptedProofIsWarningNotRed(t *testing.T) {

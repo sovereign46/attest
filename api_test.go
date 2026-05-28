@@ -3,7 +3,6 @@ package attest
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 )
 
@@ -46,7 +45,7 @@ func TestVerificationErrorHelpers(t *testing.T) {
 	fixture := newSignedFixture(t, 3)
 	bundle := fixture.Bundle
 	bundle.Envelope.Signatures[0].Sig = corruptBase64Signature(bundle.Envelope.Signatures[0].Sig)
-	_, err := Verify(context.Background(), VerifyRequest{
+	result, err := Verify(context.Background(), VerifyRequest{
 		Bundle:           bundle,
 		Subjects:         []Subject{fixture.Subject},
 		TrustRoot:        fixture.TrustRoot,
@@ -63,7 +62,7 @@ func TestVerificationErrorHelpers(t *testing.T) {
 	if !IsVerificationError(err, StateRefused) {
 		t.Fatalf("IsVerificationError did not recognize refusal: %v", err)
 	}
-	if !strings.Contains(err.Error(), "signature") {
-		t.Fatalf("error message does not mention signature: %q", err.Error())
+	if len(result.Diagnostics) == 0 || result.Diagnostics[0].Code != "signature-invalid" {
+		t.Fatalf("diagnostics = %+v, want signature-invalid", result.Diagnostics)
 	}
 }

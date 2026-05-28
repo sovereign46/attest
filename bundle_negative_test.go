@@ -2,8 +2,6 @@ package attest
 
 import (
 	"context"
-	"encoding/json"
-	"strings"
 	"testing"
 )
 
@@ -72,12 +70,9 @@ func TestParseTrustRootRejectsMalformedInputs(t *testing.T) {
 func bundleJSONWith(t *testing.T, bundle Bundle, mutate func(*Bundle)) []byte {
 	t.Helper()
 	mutate(&bundle)
-	body, err := json.Marshal(bundle)
+	body, err := MarshalBundle(bundle)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if strings.TrimSpace(string(body)) == "" {
-		t.Fatal("empty bundle JSON")
 	}
 	return body
 }

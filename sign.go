@@ -31,6 +31,9 @@ func Sign(ctx context.Context, options SignOptions) (Bundle, error) {
 	if len(options.Subjects) == 0 {
 		return Bundle{}, fmt.Errorf("at least one subject is required")
 	}
+	if len(options.Subjects) > MaxStatementSubjects {
+		return Bundle{}, fmt.Errorf("too many subjects: %d > %d", len(options.Subjects), MaxStatementSubjects)
+	}
 	subjects := append([]Subject(nil), options.Subjects...)
 	sort.Slice(subjects, func(i, j int) bool { return subjects[i].Name < subjects[j].Name })
 	for i, subject := range subjects {

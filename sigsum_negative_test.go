@@ -82,7 +82,7 @@ func TestSigsumProofNegativeCasesAreWarnings(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			bundle := fixture.Bundle
+			bundle := cloneBundle(fixture.Bundle)
 			bundle.Sigsum.Proof = rewriteSigsumProof(t, bundle.Sigsum.Proof, tt.mutate)
 			assertTransparencyWarning(t, fixture, bundle)
 		})
@@ -91,7 +91,7 @@ func TestSigsumProofNegativeCasesAreWarnings(t *testing.T) {
 
 func TestSigsumDuplicateCosignatureLineIsWarning(t *testing.T) {
 	fixture := newSignedFixture(t, 3)
-	bundle := fixture.Bundle
+	bundle := cloneBundle(fixture.Bundle)
 	bundle.Sigsum.Proof = duplicateFirstCosignatureLine(t, bundle.Sigsum.Proof)
 	assertTransparencyWarning(t, fixture, bundle)
 }
@@ -127,11 +127,11 @@ func rewriteSigsumProof(t *testing.T, proofASCII string, mutate func(*sigproof.S
 		t.Fatal(err)
 	}
 	mutate(&proof)
-	var out bytes.Buffer
-	if err := proof.ToASCII(&out); err != nil {
+	ascii, err := sigsumProofToASCII(proof)
+	if err != nil {
 		t.Fatal(err)
 	}
-	return out.String()
+	return ascii
 }
 
 func duplicateFirstCosignatureLine(t *testing.T, proofASCII string) string {

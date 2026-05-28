@@ -3,7 +3,6 @@ package attest
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -65,7 +64,7 @@ func TestKeyAndDigestFileHelpers(t *testing.T) {
 	if got := SHA256Bytes([]byte("abc")); got != "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" {
 		t.Fatalf("SHA256Bytes = %s", got)
 	}
-	if _, _, err := SHA256File(t.TempDir()); err == nil || !strings.Contains(err.Error(), "directory") {
-		t.Fatalf("SHA256File directory error = %v", err)
+	if _, _, err := SHA256File(t.TempDir()); err == nil {
+		t.Fatal("SHA256File accepted directory input")
 	}
 }

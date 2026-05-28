@@ -95,15 +95,16 @@ func TestLiveSigsumOptionValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	signing := mustKeyPair(t)
+	policyText := sigsumPolicyTextFromTrustRoot(t, newSignedFixture(t, 3).TrustRoot.Sigsum)
 	tests := []struct {
 		name   string
 		option SigsumSignOptions
 	}{
 		{name: "unknown policy name", option: SigsumSignOptions{PolicyName: "does-not-exist"}},
 		{name: "bad policy text", option: SigsumSignOptions{Policy: "not a policy\n"}},
-		{name: "rate limit domain without key", option: SigsumSignOptions{Policy: sigsumPolicyTextFromTrustRoot(t, newSignedFixture(t, 3).TrustRoot.Sigsum), RateLimitDomain: "example.com"}},
-		{name: "rate limit key without domain", option: SigsumSignOptions{Policy: sigsumPolicyTextFromTrustRoot(t, newSignedFixture(t, 3).TrustRoot.Sigsum), RateLimitPrivateKey: mustKeyPair(t).PrivateKey}},
-		{name: "invalid rate limit key", option: SigsumSignOptions{Policy: sigsumPolicyTextFromTrustRoot(t, newSignedFixture(t, 3).TrustRoot.Sigsum), RateLimitDomain: "example.com", RateLimitPrivateKey: "not-base64"}},
+		{name: "rate limit domain without key", option: SigsumSignOptions{Policy: policyText, RateLimitDomain: "example.com"}},
+		{name: "rate limit key without domain", option: SigsumSignOptions{Policy: policyText, RateLimitPrivateKey: mustKeyPair(t).PrivateKey}},
+		{name: "invalid rate limit key", option: SigsumSignOptions{Policy: policyText, RateLimitDomain: "example.com", RateLimitPrivateKey: "not-base64"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

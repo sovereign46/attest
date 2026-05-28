@@ -2,7 +2,6 @@ package attest
 
 import (
 	"context"
-	"encoding/json"
 	"strconv"
 	"strings"
 	"testing"
@@ -163,6 +162,22 @@ func TestVerifyRefusesMalformedAttestationAndPolicyCases(t *testing.T) {
 	}
 }
 
+func TestSignRejectsTooManySubjects(t *testing.T) {
+	subjects := make([]Subject, MaxStatementSubjects+1)
+	for i := range subjects {
+		subjects[i] = Subject{Name: "subject-" + strconv.Itoa(i), SHA256: strings.Repeat("0", 64)}
+	}
+	_, err := Sign(context.Background(), SignOptions{
+		Subjects:   subjects,
+		PrivateKey: mustKeyPair(t).PrivateKey,
+		KeyID:      "s46-build-prod",
+		SignedAt:   fixedTime,
+	})
+	if err == nil {
+		t.Fatal("Sign accepted too many subjects")
+	}
+}
+
 func TestVerifyRefusesFutureSignatureTime(t *testing.T) {
 	subject, err := SubjectFromFile(SubjectFileOptions{Path: writeTinyGGUF(t), Name: "tiny.gguf", RequireGGUF: true})
 	if err != nil {
@@ -197,9 +212,19 @@ func TestVerifyRefusesFutureSignatureTime(t *testing.T) {
 }
 
 func mutateBundle(bundle Bundle, mutate func(*Bundle)) Bundle {
-	mutated := bundle
+	mutated := cloneBundle(bundle)
 	mutate(&mutated)
 	return mutated
+}
+
+func cloneBundle(bundle Bundle) Bundle {
+	cloned := bundle
+	cloned.Envelope.Signatures = append([]EnvelopeSignature(nil), bundle.Envelope.Signatures...)
+	if bundle.Sigsum != nil {
+		sigsum := *bundle.Sigsum
+		cloned.Sigsum = &sigsum
+	}
+	return cloned
 }
 
 func mutateTrustRoot(root TrustRoot, mutate func(*TrustRoot)) TrustRoot {
@@ -213,12 +238,8 @@ func mutateTrustRoot(root TrustRoot, mutate func(*TrustRoot)) TrustRoot {
 
 func mutateStatement(t *testing.T, bundle Bundle, mutate func(*Statement)) Bundle {
 	t.Helper()
-	payload, err := decodeBase64Flexible(bundle.Envelope.Payload)
+	_, statement, err := decodeAndValidateEnvelope(bundle.Envelope)
 	if err != nil {
-		t.Fatal(err)
-	}
-	var statement Statement
-	if err := json.Unmarshal(payload, &statement); err != nil {
 		t.Fatal(err)
 	}
 	mutate(&statement)
@@ -226,6 +247,7 @@ func mutateStatement(t *testing.T, bundle Bundle, mutate func(*Statement)) Bundl
 	if err != nil {
 		t.Fatal(err)
 	}
+	bundle = cloneBundle(bundle)
 	bundle.Envelope.Payload = encodeBase64(body)
 	return bundle
 }
