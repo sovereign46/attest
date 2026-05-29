@@ -2,7 +2,9 @@
 
 Go module and CLI for Sovereign46 model attestation verification.
 
-Current implementation signs GGUF model artifacts with an offline Ed25519 key, wraps the signature in a DSSE/in-toto-style bundle, and optionally embeds a Sigsum proof with witness cosignatures. Production Sigsum workflows should use a separate Sigsum submit key so the release signing key does not perform network submission. Verification is tri-state:
+`s46-attest` signs GGUF model artifacts with an offline Ed25519 key, wraps the signature in a DSSE/in-toto-style bundle, and can embed a Sigsum transparency proof with witness cosignatures. Production Sigsum workflows should use a separate Sigsum submit key so the release signing key does not perform network submission.
+
+Verification is tri-state:
 
 - `trusted`: signature, attestation, identity, trust metadata, Sigsum proof, and witness quorum pass.
 - `warning`: signature/attestation pass, but transparency is missing, stale, below quorum, or Sovereign46-published status is degraded/offline. Default CLI mode exits 0.
@@ -10,7 +12,60 @@ Current implementation signs GGUF model artifacts with an offline Ed25519 key, w
 
 `--strict` turns `warning` into a non-zero exit. `S46_ATTEST_STRICT=1` enforces the same behavior for deployment environments. `--production` / `S46_ATTEST_PRODUCTION=1` fail closed with `refused` on missing, invalid, or stale transparency.
 
+## How it works
+
+A verification decision needs three inputs:
+
+1. The model file being checked.
+2. A bundle produced by `s46-attest sign` for that exact file.
+3. A trust root describing accepted signing keys, signing identities, Sigsum submit keys, witness policy, revocations, and transparency status.
+
+The local development flow mirrors production without using real keys or the public Sigsum network:
+
+1. `dev-init` creates throwaway signing, submit, log, and witness keys plus a matching trust root under `.tmp/`.
+2. `sign` hashes the GGUF file, creates a DSSE/in-toto-style attestation, signs it, and embeds either a local synthetic Sigsum proof or a live Sigsum proof.
+3. `verify` checks the file digest, signature, expected identity, predicate kind, trust-root policy, revocations, transparency proof, and witness quorum before returning `trusted`, `warning`, or `refused`.
+
+## Requirements
+
+- Git.
+- Go 1.25 or newer.
+- Python 3 for the README quick-start fixture.
+- `jq` for inspecting live Sigsum proofs in the examples.
+- `govulncheck` for the full security check:
+
+  ```sh
+  go install golang.org/x/vuln/cmd/govulncheck@latest
+  ```
+
+  If `govulncheck` is not on your `PATH`, run it as `$(go env GOPATH)/bin/govulncheck`.
+
+## Fresh clone setup
+
+These commands are intended to work from a clean machine:
+
+```sh
+git clone https://github.com/sovereign46/attest.git
+cd attest
+go test ./...
+go vet ./...
+```
+
+The first Go command downloads module dependencies. No production keys, Sigsum accounts, or external services are needed for the default test suite or local quick start.
+
+Per-command CLI help is available by passing `--help` to a subcommand. The Go flag package prints usage to stderr and exits non-zero after displaying it:
+
+```sh
+go run ./cmd/s46-attest verify --help
+```
+
+Replace `verify` with `keygen`, `dev-init`, `trust-root`, or `sign` for those commands.
+
+Contributor workflow details are in [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## CLI quick start
+
+This fully local example creates a tiny GGUF fixture, signs it with throwaway development keys, and verifies the resulting bundle. It writes only under `.tmp/`, which can be deleted after the run.
 
 ```sh
 go run ./cmd/s46-attest dev-init --dir .tmp/attest-dev --witnesses 4 --quorum 3
@@ -42,9 +97,13 @@ go run ./cmd/s46-attest verify \
   --identity-subject repo:sovereign46/models:ref:refs/heads/main
 ```
 
+Successful verification prints JSON with `"state": "trusted"`.
+
 ## Live Sigsum submission
 
-Use a real Sigsum policy to submit the DSSE envelope hash to a public Sigsum log and embed the returned proof:
+The quick start above uses local development transparency material. To exercise a real Sigsum test policy, submit the DSSE envelope hash to a public Sigsum log and embed the returned proof.
+
+Run the CLI quick start first so `.tmp/tiny.gguf` exists, then run:
 
 ```sh
 go run ./cmd/s46-attest keygen \
@@ -155,14 +214,35 @@ CLI signing accepts `--predicate-kind release|advisory|yank`, plus `--release-ch
 - Signing identities are static-key authorization constraints in the trust root and verifier request. They are not Fulcio/OIDC keyless identities.
 - GGUF validation is a header sanity check, not model-content scanning.
 
+## License
+
+This repository is available under the Business Source License 1.1 and changes to the Apache License 2.0 on the change date listed in [LICENSE](LICENSE). See [LICENSE-APACHE-2.0](LICENSE-APACHE-2.0) for the change license text.
+
 ## Tests
+
+Run the fast local checks before sending a change:
 
 ```sh
 go test ./...
-go test -race ./...
 go vet ./...
-S46_ATTEST_LIVE_SIGSUM=1 go test -run TestLiveSigsumSubmissionToTestLog -v -timeout 5m
+```
 
+Run the broader local check set before security-sensitive changes or release work:
+
+```sh
+go test -race ./...
+govulncheck ./...
+```
+
+The live Sigsum test is opt-in because it needs network access and submits to a public test log:
+
+```sh
+S46_ATTEST_LIVE_SIGSUM=1 go test -run TestLiveSigsumSubmissionToTestLog -v -timeout 5m
+```
+
+Fuzz targets can be run locally when changing parsers or verification behavior:
+
+```sh
 go test -run '^$' -fuzz=FuzzParseBundle -fuzztime=30s .
 go test -run '^$' -fuzz=FuzzParseTrustRoot -fuzztime=30s .
 go test -run '^$' -fuzz=FuzzVerifyBytes -fuzztime=30s .

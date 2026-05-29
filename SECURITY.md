@@ -9,6 +9,8 @@
 5. Typed release/advisory/yank predicate semantics and registry integration boundaries.
 6. Private-key file handling in the CLI and integration boundaries with deployment scripts.
 
+Contributor setup and day-to-day workflow are documented in [CONTRIBUTING.md](CONTRIBUTING.md).
+
 Required local checks:
 
 ```sh
@@ -18,9 +20,18 @@ go vet ./...
 govulncheck ./...
 ```
 
+Install `govulncheck` if it is not already available:
+
+```sh
+go install golang.org/x/vuln/cmd/govulncheck@latest
+```
+
+If it is not on your `PATH`, run it as `$(go env GOPATH)/bin/govulncheck`.
+
 Operational policy:
 
 - Keep signing private keys off deployment hosts; use `--sigsum-submit-private-key-file` for online Sigsum submission.
+- Use throwaway keys from `dev-init` or `keygen` for local development; never use production signing keys in examples, tests, or pull requests.
 - Distribute `TrustRoot` through a TUF-signed channel; trust roots with `policyName` must embed the resolved Sigsum policy text rather than relying on mutable remote metadata.
 - Set `requireSigningIdentity` for production trust roots and bind submit keys to signing key IDs.
 - Treat `transparencyStatus: compromised` as a hard refusal for signatures at or after `since`.
