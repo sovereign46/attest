@@ -7,18 +7,17 @@ Licensed Work: The software, source code, command-line tools, libraries, tests,
 documentation, examples, and other materials made available in this repository
 under the name sovereign46/attest.
 
-Additional Use Grant: You may make production use of the Licensed Work,
-provided that you do not use the Licensed Work to provide, operate, support,
-secure, verify, distribute, or otherwise make available a Competitive Offering.
+Additional Use Grant: You may make production use of the Licensed Work for
+your own internal purposes, including to host, secure, sign, or verify your
+own machine learning, artificial intelligence, or foundation models. You may
+not provide the Licensed Work, or any material part of its functionality,
+to third parties as a Competitive Offering.
 
-A "Competitive Offering" is any product or service, whether hosted, managed,
-self-hosted, metered, dedicated, paid, or unpaid, that either:
-
-1. hosts machine learning, artificial intelligence, or foundation models in the
-   cloud, including metered or dedicated cloud model hosting; or
-2. provides a cloud security platform that includes or operates a registry,
-   catalog, or inventory of machine learning, artificial intelligence, or
-   foundation models.
+A "Competitive Offering" is a product or service, whether paid or unpaid,
+that makes the Licensed Work or a material part of its functionality available
+to third parties to host their machine learning, artificial intelligence,
+or foundation models, or to provide a security, registry, or inventory service
+for such models.
 
 Change Date: 2030-05-29
 Change License: Apache License, Version 2.0, as set forth in
