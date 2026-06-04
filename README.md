@@ -216,7 +216,7 @@ CLI signing accepts `--predicate-kind release|advisory|yank`, plus `--release-ch
 
 ## License
 
-This repository is available under the Business Source License 1.1 and changes to the Apache License 2.0 on the change date listed in [LICENSE](LICENSE). See [LICENSE-APACHE-2.0](LICENSE-APACHE-2.0) for the change license text.
+This repository is licensed under the Apache License 2.0. See [LICENSE](LICENSE).
 
 ## Tests
 
