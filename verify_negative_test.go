@@ -2,6 +2,7 @@ package attest
 
 import (
 	"context"
+	"crypto/ed25519"
 	"strconv"
 	"strings"
 	"testing"
@@ -61,27 +62,6 @@ func TestVerifyRefusesMalformedAttestationAndPolicyCases(t *testing.T) {
 			name: "missing signed time",
 			bundle: mutateStatement(t, fixture.Bundle, func(statement *Statement) {
 				statement.Predicate.SignedAt = time.Time{}
-			}),
-			root:   fixture.TrustRoot,
-			policy: fixture.IdentityPolicy,
-		},
-		{
-			name: "too many subjects",
-			bundle: mutateStatement(t, fixture.Bundle, func(statement *Statement) {
-				statement.Subject = make([]ResourceDescriptor, MaxStatementSubjects+1)
-				for i := range statement.Subject {
-					statement.Subject[i] = ResourceDescriptor{Name: "subject", Digest: map[string]string{DigestAlgorithmSHA256: strings.Repeat("0", 64)}}
-				}
-			}),
-			root:   fixture.TrustRoot,
-			policy: fixture.IdentityPolicy,
-		},
-		{
-			name: "too many digests",
-			bundle: mutateStatement(t, fixture.Bundle, func(statement *Statement) {
-				for i := range MaxSubjectDigests {
-					statement.Subject[0].Digest["extra-"+strconv.Itoa(i)] = strings.Repeat("0", 64)
-				}
 			}),
 			root:   fixture.TrustRoot,
 			policy: fixture.IdentityPolicy,
@@ -162,6 +142,40 @@ func TestVerifyRefusesMalformedAttestationAndPolicyCases(t *testing.T) {
 	}
 }
 
+func TestVerifyStatementSubjectLimit(t *testing.T) {
+	for _, count := range []int{MaxStatementSubjects, MaxStatementSubjects + 1} {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			req, signing := deterministicVerifyFixture(t)
+			subject := req.Subjects[0]
+			req.Subjects = make([]Subject, count)
+			for i := range req.Subjects {
+				req.Subjects[i] = subject
+				req.Subjects[i].Name = "subject-" + strconv.Itoa(i)
+			}
+			req.Bundle = resignStatement(t, req.Bundle, signing, func(statement *Statement) {
+				statement.Subject = resourcesFromSubjects(req.Subjects)
+			})
+			assertStatementLimit(t, req, count > MaxStatementSubjects, "too many subjects")
+		})
+	}
+}
+
+func TestVerifySubjectDigestLimit(t *testing.T) {
+	for _, count := range []int{MaxSubjectDigests, MaxSubjectDigests + 1} {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			req, signing := deterministicVerifyFixture(t)
+			req.Bundle = resignStatement(t, req.Bundle, signing, func(statement *Statement) {
+				// SHA-256 is already present; additional algorithms do not alter
+				// the expected subject or its authenticated SHA-256 digest.
+				for i := 1; i < count; i++ {
+					statement.Subject[0].Digest["extra-"+strconv.Itoa(i)] = req.Subjects[0].SHA256
+				}
+			})
+			assertStatementLimit(t, req, count > MaxSubjectDigests, "too many digests")
+		})
+	}
+}
+
 func TestSignRejectsTooManySubjects(t *testing.T) {
 	subjects := make([]Subject, MaxStatementSubjects+1)
 	for i := range subjects {
@@ -236,6 +250,42 @@ func mutateTrustRoot(root TrustRoot, mutate func(*TrustRoot)) TrustRoot {
 	mutated.IdentityRevocations = append([]IdentityRevocation(nil), root.IdentityRevocations...)
 	mutate(&mutated)
 	return mutated
+}
+
+// Sign deliberately rejects oversized subject lists. Re-sign the mutated DSSE
+// payload directly so verifier-limit tests cannot pass on a signature failure.
+func resignStatement(t *testing.T, bundle Bundle, privateKey ed25519.PrivateKey, mutate func(*Statement)) Bundle {
+	t.Helper()
+	bundle = mutateStatement(t, bundle, mutate)
+	payload, err := decodeBase64Flexible(bundle.Envelope.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle.Envelope.Signatures[0].Sig = encodeBase64(ed25519.Sign(privateKey, pae(bundle.Envelope.PayloadType, payload)))
+	// The original proof authenticates the old envelope, not this payload.
+	bundle.Sigsum = nil
+	return bundle
+}
+
+func assertStatementLimit(t *testing.T, req VerifyRequest, overLimit bool, message string) {
+	t.Helper()
+	// No proof requirement or stale proof may mask a missing resource limit.
+	req.Mode = ModeDefault
+	req.Strict = false
+	req.TrustRoot.Sigsum = SigsumTrustRoot{}
+	result, err := Verify(context.Background(), req)
+	if overLimit {
+		if err == nil || result.State != StateRefused || len(result.Diagnostics) != 1 || result.Diagnostics[0].Code != "attestation-invalid" || !strings.Contains(result.Diagnostics[0].Message, message) {
+			t.Fatalf("expected refusal specifically for %s: state=%s signature=%t attestation=%t diagnostics=%+v, error=%v", message, result.State, result.Signature.Valid, result.Attestation.Valid, result.Diagnostics, err)
+		}
+		return
+	}
+	if err != nil || result.State != StateWarning || !result.Signature.Valid || !result.Attestation.Valid || len(result.Attestation.Subjects) != len(req.Subjects) {
+		t.Fatalf("exact limit must verify the signature and all subjects: %+v, %v", result, err)
+	}
+	if len(result.Diagnostics) != 1 || result.Diagnostics[0].Code != "transparency-unavailable" {
+		t.Fatalf("only missing optional transparency should warn: %+v", result)
+	}
 }
 
 func mutateStatement(t *testing.T, bundle Bundle, mutate func(*Statement)) Bundle {
