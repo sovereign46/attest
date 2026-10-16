@@ -59,7 +59,7 @@ Per-command CLI help is available by passing `--help` to a subcommand. The Go fl
 go run ./cmd/s46-attest verify --help
 ```
 
-Replace `verify` with `keygen`, `dev-init`, `trust-root`, or `sign` for those commands.
+Replace `verify` with `keygen`, `dev-init`, `trust-root`, `sign`, or `refresh` for those commands.
 
 Contributor workflow details are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -196,6 +196,40 @@ result, err := attest.Verify(ctx, attest.VerifyRequest{
     Mode: attest.ModeProduction,
 })
 ```
+
+### Native safetensors packages
+
+The [`modelpackage`](modelpackage/README.md) package builds and verifies canonical inventories for native Hugging Face safetensors checkpoints. It checks file, index, shard, and tensor closure with bounded, no-follow filesystem reads. `BuildContext` and `VerifyContext` support cancellation during checkpoint reads; `Parse` accepts a bounded inventory snapshot.
+
+Package integrity is not model certification, upstream-origin verification, or evidence of bytes loaded by a running inference service. Keep the inventory outside the checkpoint directory and authenticate it through the release pipeline before using it as an expected inventory.
+
+### Current activation versus historical verification
+
+Historical `Verify` behavior is unchanged. To decide whether a release may be activated now:
+
+1. Obtain the complete trust root through an independently authenticated channel. A pinned release signing key alone does not authenticate an origin's log/witness policy, submit-key authorizations, or revocations.
+2. Call `ValidateActivationTrust` with the independently authenticated root and pinned key ID, public key, issuer, and subject.
+3. Call `Verify` with that root, the pinned identity, `ModeProduction`, and `Strict: true`; then call `ValidateActivationResult` on the returned result.
+4. Reload current independent policy and repeat verification after expensive artifact work, immediately before activation.
+
+These helpers check the supplied policy and verification result; they neither provision nor authenticate the policy source. Activation refuses currently effective identity revocations and non-operational transparency, including for historically valid releases.
+
+### Refresh transparency without resigning
+
+`RefreshTransparency` and the `refresh` CLI command obtain current Sigsum evidence for the existing signed envelope. They require the original subject bytes, pinned signer identity, an independently provisioned trust root with embedded policy, and a separately authorized submit key. A valid stale proof or missing proof can be refreshed; an invalid proof cannot. Refresh preserves the signed envelope and verifies the new proof in production+strict mode before returning it.
+
+```sh
+s46-attest refresh \
+  --file manifest.json --bundle manifest.attestation.json \
+  --out refreshed.attestation.json \
+  --trust-root /secure/policy/trust-root.json \
+  --key-id <release-key-id> \
+  --identity-issuer <issuer> --identity-subject <subject> \
+  --sigsum-submit-private-key-file /secure/submit.private \
+  --sigsum-policy-file /secure/policy/sigsum.policy
+```
+
+This operation makes live log submissions. It does not require a release signing private key, authorize a new release, or remove the requirement to authenticate policy independently. Total submission time is capped at ten minutes, individual requests at thirty seconds, and witness age at twenty-four hours. Preserve hash-bound historical archives; install refreshed proof sidecars through the consuming release workflow rather than mutating signed snapshots.
 
 ### Predicate semantics
 

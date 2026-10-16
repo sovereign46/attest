@@ -35,6 +35,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runSign(args[1:], stdout, stderr)
 	case "verify":
 		return runVerify(args[1:], stdout, stderr)
+	case "refresh":
+		return runRefresh(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n", args[0])
 		usage(stderr)
@@ -43,7 +45,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 }
 
 func usage(stderr io.Writer) {
-	fmt.Fprintln(stderr, "usage: s46-attest <keygen|dev-init|trust-root|sign|verify> [flags]")
+	fmt.Fprintln(stderr, "usage: s46-attest <keygen|dev-init|trust-root|sign|verify|refresh> [flags]")
 }
 
 func runKeygen(args []string, stdout io.Writer, stderr io.Writer) int {
