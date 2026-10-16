@@ -29,7 +29,7 @@ The local development flow mirrors production without using real keys or the pub
 ## Requirements
 
 - Git.
-- Go 1.25 or newer.
+- A patched Go toolchain: builds are validated with Go 1.26.9; Go 1.27 users need 1.27.2 or newer. The module minimum alone does not exclude vulnerable Go 1.27.0/1.27.1.
 - Python 3 for the README quick-start fixture.
 - `jq` for inspecting live Sigsum proofs in the examples.
 - `govulncheck` for the full security check:
