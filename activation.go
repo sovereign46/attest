@@ -69,20 +69,25 @@ func ValidateActivationTrust(root TrustRoot, identity IdentityPolicy, expectedPu
 
 // ValidateCurrentResult requires a trusted Verify result for the exact expected
 // release, advisory, or yank predicate, with valid subjects and present, valid
-// witness evidence no older than 24 hours. Witness timestamps may be at most
-// DefaultSignatureFutureSkew ahead of now. Zero now uses wall time.
+// witness evidence no older than 24 hours. It also checks independently
+// authenticated current trust against the pinned signer, refusing currently
+// effective identity revocations and any non-operational transparency status.
+// Witness timestamps may be at most DefaultSignatureFutureSkew ahead of now.
+// Zero now uses wall time.
 //
 // This is a policy check, not cryptographic verification: the result must come
-// from Verify with authenticated current trust, pinned ExpectedIdentity, the same
+// from Verify with root, the pinned ExpectedIdentity, the same
 // ExpectedPredicateKind, production mode, and strict warnings. After long-running
-// work, rerun Verify at the current time against current authenticated trust, then
-// validate that new result. Rechecking an old result alone cannot detect newly
-// effective trust-root expiry or revocations.
-func ValidateCurrentResult(result VerifyResult, expectedPredicateKind PredicateKind, now time.Time) error {
-	switch expectedPredicateKind {
-	case PredicateKindRelease, PredicateKindAdvisory, PredicateKindYank:
-	default:
+// work, reload current independent policy, rerun Verify, and repeat this check.
+func ValidateCurrentResult(result VerifyResult, expectedPredicateKind PredicateKind, root TrustRoot, identity IdentityPolicy, expectedPublicKey string, now time.Time) error {
+	if buildTypeForPredicateKind(expectedPredicateKind) == "" {
 		return fmt.Errorf("current result requires an exact supported predicate kind")
+	}
+	if err := ValidateActivationTrust(root, identity, expectedPublicKey, now); err != nil {
+		return fmt.Errorf("current result trust: %w", err)
+	}
+	if result.SigningKeyID != identity.KeyID || result.Signature.KeyID != identity.KeyID || result.SigningIdentity.Issuer != identity.Issuer || result.SigningIdentity.Subject != identity.Subject {
+		return fmt.Errorf("current result signer differs from pinned identity")
 	}
 	return validateCurrentResult(
 		result,

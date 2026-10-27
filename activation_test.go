@@ -134,18 +134,24 @@ func TestValidateActivationResult(t *testing.T) {
 }
 
 func TestValidateCurrentResult(t *testing.T) {
+	fixture := newSignedFixture(t, 3)
+	root := fixture.TrustRoot
+	identity := fixture.IdentityPolicy
+	publicKey := root.SigningKeys[0].PublicKey
 	now := fixedTime.Add(time.Hour)
 	valid := VerifyResult{
-		State:        StateTrusted,
-		Signature:    SignatureResult{Valid: true},
-		Attestation:  AttestationResult{Valid: true},
-		Transparency: TransparencyResult{Present: true, Valid: true, WitnessedAt: now},
+		State:           StateTrusted,
+		Signature:       SignatureResult{Valid: true, KeyID: identity.KeyID},
+		Attestation:     AttestationResult{Valid: true},
+		Transparency:    TransparencyResult{Present: true, Valid: true, WitnessedAt: now},
+		SigningKeyID:    identity.KeyID,
+		SigningIdentity: fixture.Identity,
 	}
 	for _, kind := range []PredicateKind{PredicateKindRelease, PredicateKindAdvisory, PredicateKindYank} {
 		t.Run(string(kind), func(t *testing.T) {
 			result := valid
 			result.PredicateKind = kind
-			if err := ValidateCurrentResult(result, kind, now); err != nil {
+			if err := ValidateCurrentResult(result, kind, root, identity, publicKey, now); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -154,7 +160,7 @@ func TestValidateCurrentResult(t *testing.T) {
 		t.Run("unsupported-"+string(kind), func(t *testing.T) {
 			result := valid
 			result.PredicateKind = kind
-			if err := ValidateCurrentResult(result, kind, now); err == nil {
+			if err := ValidateCurrentResult(result, kind, root, identity, publicKey, now); err == nil {
 				t.Fatal("unsupported predicate kind passed current-result validation")
 			}
 		})
@@ -164,6 +170,8 @@ func TestValidateCurrentResult(t *testing.T) {
 		change func(*VerifyResult)
 	}{
 		{"predicate mismatch", func(r *VerifyResult) { r.PredicateKind = PredicateKindYank }},
+		{"different signing key", func(r *VerifyResult) { r.SigningKeyID = "other" }},
+		{"different signing identity", func(r *VerifyResult) { r.SigningIdentity.Subject = "other" }},
 		{"warning", func(r *VerifyResult) { r.State = StateWarning }},
 		{"invalid signature", func(r *VerifyResult) { r.Signature.Valid = false }},
 		{"invalid subjects", func(r *VerifyResult) { r.Attestation.Valid = false }},
@@ -181,10 +189,58 @@ func TestValidateCurrentResult(t *testing.T) {
 			result := valid
 			result.PredicateKind = PredicateKindAdvisory
 			tt.change(&result)
-			if err := ValidateCurrentResult(result, PredicateKindAdvisory, now); err == nil {
+			if err := ValidateCurrentResult(result, PredicateKindAdvisory, root, identity, publicKey, now); err == nil {
 				t.Fatal("invalid current result passed validation")
 			}
 		})
+	}
+}
+
+func TestValidateCurrentResultRejectsPostSignIncidents(t *testing.T) {
+	for _, kind := range []PredicateKind{PredicateKindAdvisory, PredicateKindYank} {
+		for _, incident := range []string{"identity revoked", "transparency compromised"} {
+			t.Run(string(kind)+"/"+incident, func(t *testing.T) {
+				signing, log, witness := mustKeyPair(t), mustKeyPair(t), mustKeyPair(t)
+				identity := Identity{Issuer: "issuer", Subject: "subject"}
+				identityPolicy := IdentityPolicy{KeyID: "signing", Issuer: identity.Issuer, Subject: identity.Subject}
+				subject := Subject{Name: "registry.json", SHA256: SHA256Bytes([]byte("{}")), SizeBytes: 2}
+				options := SignOptions{
+					Subjects: []Subject{subject}, PrivateKey: signing.PrivateKey, KeyID: identityPolicy.KeyID,
+					Identity: identity, SignedAt: fixedTime, PredicateKind: kind,
+					Sigsum: &SigsumSignOptions{LogPrivateKey: log.PrivateKey, WitnessPrivateKeys: []string{witness.PrivateKey}, WitnessTimestamp: fixedTime.Add(time.Hour)},
+				}
+				if kind == PredicateKindAdvisory {
+					options.Advisory = AdvisoryPredicate{ID: "ADV-1", Summary: "summary"}
+				} else {
+					options.Yank = YankPredicate{Reason: "withdrawn"}
+				}
+				bundle, err := Sign(context.Background(), options)
+				if err != nil {
+					t.Fatal(err)
+				}
+				root := TrustRoot{
+					Schema:      SchemaVersion,
+					SigningKeys: []TrustedKey{{KeyID: identityPolicy.KeyID, PublicKey: signing.PublicKey, Identity: identity}},
+					Sigsum:      SigsumTrustRoot{Logs: []TrustedKey{{KeyID: "log", PublicKey: log.PublicKey}}, Witnesses: []TrustedKey{{KeyID: "witness", PublicKey: witness.PublicKey}}, Quorum: 1},
+				}
+				now := fixedTime.Add(time.Hour)
+				if incident == "identity revoked" {
+					root.IdentityRevocations = []IdentityRevocation{{Issuer: identity.Issuer, Subject: identity.Subject, RevokedSince: fixedTime.Add(time.Minute)}}
+				} else {
+					root.TransparencyStatus = TransparencyStatus{State: TransparencyCompromised, Since: fixedTime.Add(time.Minute)}
+				}
+				result, err := Verify(context.Background(), VerifyRequest{
+					Bundle: bundle, Subjects: []Subject{subject}, TrustRoot: root, ExpectedIdentity: identityPolicy,
+					ExpectedPredicateKind: kind, Mode: ModeProduction, Strict: true, Now: now,
+				})
+				if err != nil || result.State != StateTrusted {
+					t.Fatalf("historical verification failed: %+v, %v", result, err)
+				}
+				if err := ValidateCurrentResult(result, kind, root, identityPolicy, signing.PublicKey, now); err == nil {
+					t.Fatal("post-sign incident passed current-result validation")
+				}
+			})
+		}
 	}
 }
 
