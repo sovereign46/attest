@@ -251,29 +251,45 @@ func countVerifiedWitnesses(treeHead types.TreeHead, cosignatures map[sigcrypto.
 	return verifiedCount, witnessedAt, fresh
 }
 
+type witnessQuorumTime struct {
+	satisfied bool
+	timestamp time.Time
+}
+
 type witnessQuorumTimeProcessor map[sigcrypto.Hash]time.Time
 
 func (w witnessQuorumTimeProcessor) ProcessWitness(keyHash sigcrypto.Hash) any {
-	return w[keyHash]
+	timestamp, satisfied := w[keyHash]
+	return witnessQuorumTime{satisfied: satisfied, timestamp: timestamp}
 }
 
 func (w witnessQuorumTimeProcessor) ProcessGroup(quorum int, members []any) any {
+	satisfiedWithoutTimestamp := 0
 	timestamps := make([]time.Time, 0, len(members))
 	for _, member := range members {
-		timestamp := member.(time.Time)
-		if !timestamp.IsZero() {
-			timestamps = append(timestamps, timestamp)
+		result := member.(witnessQuorumTime)
+		if !result.satisfied {
+			continue
+		}
+		if result.timestamp.IsZero() {
+			satisfiedWithoutTimestamp++
+		} else {
+			timestamps = append(timestamps, result.timestamp)
 		}
 	}
-	if quorum <= 0 || len(timestamps) < quorum {
-		return time.Time{}
+	if satisfiedWithoutTimestamp+len(timestamps) < quorum {
+		return witnessQuorumTime{}
+	}
+	requiredTimestamps := quorum - satisfiedWithoutTimestamp
+	if requiredTimestamps <= 0 {
+		return witnessQuorumTime{satisfied: true}
 	}
 	sort.Slice(timestamps, func(i, j int) bool { return timestamps[i].After(timestamps[j]) })
-	return timestamps[quorum-1]
+	return witnessQuorumTime{satisfied: true, timestamp: timestamps[requiredTimestamps-1]}
 }
 
 func freshestWitnessQuorumTime(verified map[sigcrypto.Hash]time.Time, witnessPolicy *policy.Policy) time.Time {
-	return witnessPolicy.ProcessQuorum(witnessQuorumTimeProcessor(verified)).(time.Time)
+	return witnessPolicy.ProcessQuorum(witnessQuorumTimeProcessor(verified)).(witnessQuorumTime).timestamp
 }
 
 func values[K comparable, V any](m map[K]V) []V {

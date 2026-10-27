@@ -56,9 +56,15 @@ func TestWitnessTimestampQuorumExcludesFutureCosignatures(t *testing.T) {
 		cosignatures[sigcrypto.HashBytes(public[:])] = cosignature
 	}
 	addCosignature(0, oldestAcceptable)
-	addCosignature(1, now.Add(DefaultSignatureFutureSkew+time.Second))
+	addCosignature(1, now.Add(DefaultSignatureFutureSkew))
 
 	verified, quorumTime, freshQuorum := countVerifiedWitnesses(treeHead, cosignatures, compiled.witnessKeys, origin, compiled.policy, now, DefaultWitnessMaxAge)
+	if verified != 2 || !quorumTime.Equal(oldestAcceptable) || !freshQuorum {
+		t.Fatalf("future-skew boundary did not complete quorum: verified=%d quorumTime=%s freshQuorum=%t", verified, quorumTime, freshQuorum)
+	}
+
+	addCosignature(1, now.Add(DefaultSignatureFutureSkew+time.Second))
+	verified, quorumTime, freshQuorum = countVerifiedWitnesses(treeHead, cosignatures, compiled.witnessKeys, origin, compiled.policy, now, DefaultWitnessMaxAge)
 	if verified != 2 || !quorumTime.IsZero() || freshQuorum {
 		t.Fatalf("future witness completed quorum: verified=%d quorumTime=%s freshQuorum=%t", verified, quorumTime, freshQuorum)
 	}
@@ -258,6 +264,41 @@ func TestFreshestWitnessQuorumTimeHandlesNestedAlternatives(t *testing.T) {
 	}
 	if got := freshestWitnessQuorumTime(verified, compiled.policy); !got.Equal(times[2]) {
 		t.Fatalf("nested freshest quorum time = %s, want %s", got, times[2])
+	}
+}
+
+func TestNestedNoneGroupPreservesWitnessTimestamp(t *testing.T) {
+	fixture := newSignedFixture(t, 3)
+	policyText := fmt.Sprintf("log %s\nwitness w %s\ngroup root all none w\nquorum root\n",
+		trustedKeyHex(t, fixture.TrustRoot.Sigsum.Logs[0]),
+		trustedKeyHex(t, fixture.TrustRoot.Sigsum.Witnesses[0]))
+	sigsumRoot, err := SigsumTrustRootFromPolicy("", policyText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.TrustRoot.Sigsum = sigsumRoot
+	result, err := Verify(context.Background(), VerifyRequest{
+		Bundle: fixture.Bundle, Subjects: []Subject{fixture.Subject}, TrustRoot: fixture.TrustRoot,
+		ExpectedIdentity: fixture.IdentityPolicy, Mode: ModeProduction, Strict: true,
+		Now: fixedTime.Add(time.Hour),
+	})
+	if err != nil || result.State != StateTrusted || !result.Transparency.WitnessedAt.Equal(fixedTime) {
+		t.Fatalf("nested none policy did not preserve witness timestamp: %+v, %v", result, err)
+	}
+}
+
+func TestSignRejectsPreEpochWitnessTimestamp(t *testing.T) {
+	signing := mustKeyPair(t)
+	subject := Subject{Name: "artifact", SHA256: SHA256Bytes([]byte("artifact")), SizeBytes: 8}
+	_, err := Sign(context.Background(), SignOptions{
+		Subjects: []Subject{subject}, PrivateKey: signing.PrivateKey, KeyID: "release", SignedAt: fixedTime,
+		Sigsum: &SigsumSignOptions{
+			LogPrivateKey: mustKeyPair(t).PrivateKey, WitnessPrivateKeys: []string{mustKeyPair(t).PrivateKey},
+			WitnessTimestamp: time.Unix(-1, 0),
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "before the Unix epoch") {
+		t.Fatalf("Sign accepted a pre-epoch witness timestamp: %v", err)
 	}
 }
 

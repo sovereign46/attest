@@ -274,6 +274,10 @@ func createSigsumProof(ctx context.Context, envelope DSSEEnvelope, signingPrivat
 	if timestamp.IsZero() {
 		timestamp = time.Now().UTC().Truncate(time.Second)
 	}
+	unixTimestamp := timestamp.Unix()
+	if unixTimestamp < 0 {
+		return "", fmt.Errorf("sigsum witness timestamp must not be before the Unix epoch")
+	}
 	cosignatures := map[sigcrypto.Hash]types.Cosignature{}
 	for i, rawWitnessKey := range options.WitnessPrivateKeys {
 		witnessPrivateKey, err := ParsePrivateKey(rawWitnessKey)
@@ -285,7 +289,7 @@ func createSigsumProof(ctx context.Context, envelope DSSEEnvelope, signingPrivat
 			return "", err
 		}
 		witnessPublic := witnessSigner.Public()
-		cosignature, err := treeHead.Cosign(witnessSigner, origin, uint64(timestamp.Unix()))
+		cosignature, err := treeHead.Cosign(witnessSigner, origin, uint64(unixTimestamp))
 		if err != nil {
 			return "", err
 		}
