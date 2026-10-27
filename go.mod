@@ -1,6 +1,6 @@
 module github.com/sovereign46/attest
 
-go 1.26.9
+go 1.26.10
 
 require sigsum.org/sigsum-go v0.14.0
 
