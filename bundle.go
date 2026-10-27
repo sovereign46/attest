@@ -9,14 +9,23 @@ import (
 )
 
 func MarshalBundle(bundle Bundle) ([]byte, error) {
+	if err := validateBundleResourceBounds(bundle); err != nil {
+		return nil, err
+	}
 	body, err := json.MarshalIndent(bundle, "", "  ")
 	if err != nil {
 		return nil, err
+	}
+	if len(body)+1 > maxJSONBytes {
+		return nil, fmt.Errorf("bundle JSON exceeds %d-byte limit", maxJSONBytes)
 	}
 	return append(body, '\n'), nil
 }
 
 func ParseBundle(body []byte) (Bundle, error) {
+	if err := validateStrictJSON(body, Bundle{}); err != nil {
+		return Bundle{}, err
+	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	var bundle Bundle
@@ -27,6 +36,9 @@ func ParseBundle(body []byte) (Bundle, error) {
 	if err := decoder.Decode(&extra); err != io.EOF {
 		return Bundle{}, fmt.Errorf("bundle contains trailing data")
 	}
+	if err := validateBundleResourceBounds(bundle); err != nil {
+		return Bundle{}, err
+	}
 	if err := validateBundleShape(bundle); err != nil {
 		return Bundle{}, err
 	}
@@ -34,7 +46,7 @@ func ParseBundle(body []byte) (Bundle, error) {
 }
 
 func LoadBundle(path string) (Bundle, error) {
-	body, err := os.ReadFile(path)
+	body, err := readJSONFile(path)
 	if err != nil {
 		return Bundle{}, err
 	}
@@ -50,14 +62,23 @@ func WriteBundle(path string, bundle Bundle) error {
 }
 
 func MarshalTrustRoot(root TrustRoot) ([]byte, error) {
+	if err := validateTrustRootResourceBounds(root); err != nil {
+		return nil, err
+	}
 	body, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
 		return nil, err
+	}
+	if len(body)+1 > maxJSONBytes {
+		return nil, fmt.Errorf("trust-root JSON exceeds %d-byte limit", maxJSONBytes)
 	}
 	return append(body, '\n'), nil
 }
 
 func ParseTrustRoot(body []byte) (TrustRoot, error) {
+	if err := validateStrictJSON(body, TrustRoot{}); err != nil {
+		return TrustRoot{}, err
+	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	var root TrustRoot
@@ -68,9 +89,6 @@ func ParseTrustRoot(body []byte) (TrustRoot, error) {
 	if err := decoder.Decode(&extra); err != io.EOF {
 		return TrustRoot{}, fmt.Errorf("trust root contains trailing data")
 	}
-	if root.Schema == 0 {
-		root.Schema = SchemaVersion
-	}
 	root, err := validateTrustRoot(root)
 	if err != nil {
 		return TrustRoot{}, err
@@ -79,7 +97,7 @@ func ParseTrustRoot(body []byte) (TrustRoot, error) {
 }
 
 func LoadTrustRoot(path string) (TrustRoot, error) {
-	body, err := os.ReadFile(path)
+	body, err := readJSONFile(path)
 	if err != nil {
 		return TrustRoot{}, err
 	}
@@ -95,6 +113,22 @@ func WriteTrustRoot(path string, root TrustRoot) error {
 		return err
 	}
 	return writeFilePrivate(path, body, 0o644)
+}
+
+func readJSONFile(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	body, err := io.ReadAll(io.LimitReader(file, maxJSONBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxJSONBytes {
+		return nil, fmt.Errorf("JSON exceeds %d-byte limit", maxJSONBytes)
+	}
+	return body, nil
 }
 
 func validateBundleShape(bundle Bundle) error {

@@ -2,7 +2,7 @@
 
 Go module and CLI for Sovereign46 model attestation verification.
 
-`s46-attest` signs GGUF model artifacts with an offline Ed25519 key, wraps the signature in a DSSE/in-toto-style bundle, and can embed a Sigsum transparency proof with witness cosignatures. Production Sigsum workflows should use a separate Sigsum submit key so the release signing key does not perform network submission.
+`s46-attest` signs model artifacts with an offline Ed25519 key, wraps the signature in a DSSE/in-toto-style bundle, and can embed a Sigsum transparency proof with witness cosignatures. The Go API accepts arbitrary byte artifacts, including release and registry JSON; the `sign` and `verify` CLI commands currently require GGUF files. Production Sigsum workflows should use a separate Sigsum submit key so the release signing key does not perform network submission.
 
 Verification is tri-state:
 
@@ -203,16 +203,28 @@ The [`modelpackage`](modelpackage/README.md) package builds and verifies canonic
 
 Package integrity is not model certification, upstream-origin verification, or evidence of bytes loaded by a running inference service. Keep the inventory outside the checkpoint directory and authenticate it through the release pipeline before using it as an expected inventory.
 
+### Release and current-registry integration
+
+An attestation authenticates the exact expected subject set: names, SHA-256 digests, and sizes. It does not infer a model ID, deployment mode, release-to-registry relationship, approval, upstream provenance, or which registry is current. For a model site or deployment gate:
+
+1. Serialize each release record and registry snapshot deterministically and keep those bytes immutable.
+2. Either attest the release and registry together as separate `Subjects`, or verify separate bundles against independently supplied expected subjects. Verification rejects missing, extra, duplicate, malformed, or size-mismatched subjects. Subject names must be canonical relative paths using `/`; traversal, platform-specific separators, control characters, empty segments, and path aliases are rejected.
+3. After verification, check that the authenticated registry record references the exact authenticated release identity/digest required by the application. Do not select the expected digest from an unverified registry or accept a bundle merely because its signer is trusted.
+4. Treat `ReleasePredicate.Channel` as signed descriptive metadata only. `Verify` does not accept an expected channel policy; bind security-relevant modes such as cloud or offline operation in the authenticated release/registry bytes and enforce them in the consuming application.
+5. For a current registry or newly activated release, follow the activation procedure below with fresh independently authenticated policy. Plain `Verify` intentionally retains historical authority semantics.
+
+The library does not provide registry storage, HTTP publication, rollback protection, release approval, or model-origin evidence. The current CLI cannot create or verify arbitrary registry JSON; use the Go API (with `SubjectFromFile` and `RequireGGUF: false`) or add a reviewed integration rather than relabeling JSON as GGUF.
+
 ### Current activation versus historical verification
 
-Historical `Verify` behavior is unchanged. To decide whether a release may be activated now:
+`Verify` applies revocations and compromised-status cutoffs to the signature time, so a release that predates an incident can remain historically valid. To decide whether a release may be activated now:
 
 1. Obtain the complete trust root through an independently authenticated channel. A pinned release signing key alone does not authenticate an origin's log/witness policy, submit-key authorizations, or revocations.
 2. Call `ValidateActivationTrust` with the independently authenticated root and pinned key ID, public key, issuer, and subject.
 3. Call `Verify` with that root, the pinned identity, `ModeProduction`, and `Strict: true`; then call `ValidateActivationResult` on the returned result.
 4. Reload current independent policy and repeat verification after expensive artifact work, immediately before activation.
 
-These helpers check the supplied policy and verification result; they neither provision nor authenticate the policy source. Activation refuses currently effective identity revocations and non-operational transparency, including for historically valid releases.
+These helpers check the supplied policy and verification result; they neither provision nor authenticate the policy source. Activation accepts only a verified `release` predicate and refuses currently effective identity revocations and non-operational transparency, including for historically valid releases. `witnessedAt` records the oldest cosignature in the freshest nonfuture witness set that satisfies the configured policy, so the 24-hour activation check requires a fresh quorum rather than one fresh witness. Cosignatures beyond the five-minute future-skew allowance cannot satisfy that timestamp quorum.
 
 ### Refresh transparency without resigning
 
@@ -244,8 +256,9 @@ CLI signing accepts `--predicate-kind release|advisory|yank`, plus `--release-ch
 ## Security model notes
 
 - Trust roots are unsigned JSON in this package. Production deployments should distribute them through a TUF-signed, rollback-protected channel and may set `expires` for additional freshness enforcement.
-- A `policyName` in a trust root is accepted only when the resolved Sigsum policy text is embedded, avoiding mutable remote policy lookup during verification.
+- A `policyName` in a trust root is accepted only when the resolved Sigsum policy text is embedded, avoiding mutable remote policy lookup during verification. Embedded-policy trust roots must retain the exact canonical log/witness mirrors emitted by `SigsumTrustRootFromPolicy`; verification rejects altered metadata, noncanonical ordering, static quorum overrides, and log/witness key reuse.
 - Signing identities are static-key authorization constraints in the trust root and verifier request. They are not Fulcio/OIDC keyless identities.
+- Bundle, trust-root, and signed-statement JSON is limited to 16 MiB, 128 nesting levels, and bounded collections. Parsing rejects duplicate members, case-aliased schema fields, invalid UTF-8/surrogates, and trailing values before typed decoding. Equivalent bounds apply to typed Go inputs and producer output; Sigsum policy text, policy depth/entities, proof bytes/lines, and cosignature counts have separate pre-parse limits. Untrusted serialized input must enter through `ParseBundle`/`LoadBundle` and `ParseTrustRoot`/`LoadTrustRoot`, not through direct struct decoding.
 - GGUF validation is a header sanity check, not model-content scanning.
 
 ## License
@@ -282,4 +295,4 @@ go test -run '^$' -fuzz=FuzzParseTrustRoot -fuzztime=30s .
 go test -run '^$' -fuzz=FuzzVerifyBytes -fuzztime=30s .
 ```
 
-The test suite includes Sigstore-semantics DSSE/in-toto tests, malformed bundle/trust-root parser tests, Sigsum quorum/staleness/corruption and separate-submit-key tests, embedded-policy and live-log tests, TUF-style transparency status and trust-root expiry tests, identity revocation tests, typed release/advisory/yank predicate tests, private-key file hardening tests, fuzz targets, production/strict/default CLI tests, and end-to-end CLI tests against a tiny GGUF fixture.
+The test suite includes Sigstore-semantics DSSE/in-toto tests, duplicate/ambiguous JSON and subject rejection tests, malformed bundle/trust-root parser tests, Sigsum quorum/freshness/corruption and separate-submit-key tests, embedded-policy and live-log tests, TUF-style transparency status and trust-root expiry tests, identity revocation tests, typed release/advisory/yank predicate tests, private-key file hardening tests, fuzz targets, production/strict/default CLI tests, and end-to-end CLI tests against a tiny GGUF fixture.

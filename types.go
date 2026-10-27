@@ -271,13 +271,15 @@ type AttestationResult struct {
 }
 
 type TransparencyResult struct {
-	Valid              bool      `json:"valid"`
-	Present            bool      `json:"present"`
-	VerifiedWitnesses  int       `json:"verifiedWitnesses"`
-	Quorum             int       `json:"quorum,omitempty"`
-	QuorumPolicy       string    `json:"quorumPolicy,omitempty"`
-	LogKeyID           string    `json:"logKeyId,omitempty"`
-	SubmitKeyID        string    `json:"submitKeyId,omitempty"`
+	Valid             bool   `json:"valid"`
+	Present           bool   `json:"present"`
+	VerifiedWitnesses int    `json:"verifiedWitnesses"`
+	Quorum            int    `json:"quorum,omitempty"`
+	QuorumPolicy      string `json:"quorumPolicy,omitempty"`
+	LogKeyID          string `json:"logKeyId,omitempty"`
+	SubmitKeyID       string `json:"submitKeyId,omitempty"`
+	// WitnessedAt is the oldest cosignature in the freshest trusted,
+	// nonfuture witness set that satisfies QuorumPolicy.
 	WitnessedAt        time.Time `json:"witnessedAt,omitempty,omitzero"`
 	Stale              bool      `json:"stale,omitempty"`
 	VerificationDetail string    `json:"verificationDetail,omitempty"`

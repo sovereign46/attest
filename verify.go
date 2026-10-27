@@ -37,6 +37,22 @@ type verification struct {
 }
 
 func (v *verification) run() (VerifyResult, error) {
+	if err := validateBoundedString(string(v.req.Mode), maxSecurityStringBytes, "verification mode"); err != nil {
+		v.refuse("mode-invalid", err.Error())
+		return v.finish()
+	}
+	if err := validateBoundedStrings(maxSecurityStringBytes, "verification policy field", v.req.ExpectedIdentity.KeyID, v.req.ExpectedIdentity.Issuer, v.req.ExpectedIdentity.Subject, string(v.req.ExpectedPredicateKind)); err != nil {
+		v.refuse("verification-request-invalid", err.Error())
+		return v.finish()
+	}
+	if err := validateExpectedSubjects(v.req.Subjects); err != nil {
+		v.refuse("attestation-invalid", err.Error())
+		return v.finish()
+	}
+	if err := validateBundleResourceBounds(v.req.Bundle); err != nil {
+		v.refuse("bundle-invalid", err.Error())
+		return v.finish()
+	}
 	if v.req.Now.IsZero() {
 		v.req.Now = time.Now().UTC()
 	}
@@ -45,6 +61,12 @@ func (v *verification) run() (VerifyResult, error) {
 	}
 	if v.req.Mode == "" {
 		v.req.Mode = ModeDefault
+	}
+	switch v.req.Mode {
+	case ModeDefault, ModeStrict, ModeProduction:
+	default:
+		v.refuse("mode-invalid", fmt.Sprintf("unsupported verification mode %q", v.req.Mode))
+		return v.finish()
 	}
 	trustRoot, err := validateTrustRoot(v.req.TrustRoot)
 	if err != nil {
@@ -106,6 +128,9 @@ func (v *verification) run() (VerifyResult, error) {
 }
 
 func decodeAndValidateEnvelope(envelope DSSEEnvelope) ([]byte, Statement, error) {
+	if len(envelope.Payload) > maxJSONBytes {
+		return nil, Statement{}, fmt.Errorf("payload encoding exceeds %d-byte limit", maxJSONBytes)
+	}
 	if envelope.PayloadType != InTotoPayloadType {
 		return nil, Statement{}, fmt.Errorf("payload type %q is not %q", envelope.PayloadType, InTotoPayloadType)
 	}
@@ -115,6 +140,9 @@ func decodeAndValidateEnvelope(envelope DSSEEnvelope) ([]byte, Statement, error)
 	payload, err := decodeBase64Flexible(envelope.Payload)
 	if err != nil {
 		return nil, Statement{}, fmt.Errorf("payload base64: %w", err)
+	}
+	if err := validateStrictJSON(payload, Statement{}); err != nil {
+		return nil, Statement{}, fmt.Errorf("statement JSON: %w", err)
 	}
 	var statement Statement
 	decoder := json.NewDecoder(bytes.NewReader(payload))
@@ -169,6 +197,9 @@ func (v *verification) verifyAttestation(statement Statement) error {
 	if len(v.req.Subjects) == 0 {
 		return fmt.Errorf("verification requires at least one expected subject")
 	}
+	if err := validateStatementSubjects(statement.Subject); err != nil {
+		return err
+	}
 	expected := append([]Subject(nil), v.req.Subjects...)
 	sort.Slice(expected, func(i, j int) bool { return expected[i].Name < expected[j].Name })
 	actual := append([]ResourceDescriptor(nil), statement.Subject...)
@@ -181,18 +212,81 @@ func (v *verification) verifyAttestation(statement Statement) error {
 		if actual[i].Name != expected[i].Name {
 			return fmt.Errorf("subject[%d] name mismatch: bundle %q expected %q", i, actual[i].Name, expected[i].Name)
 		}
-		if len(actual[i].Digest) > MaxSubjectDigests {
-			return fmt.Errorf("subject %q contains too many digests: %d > %d", expected[i].Name, len(actual[i].Digest), MaxSubjectDigests)
-		}
 		if strings.ToLower(actual[i].Digest[DigestAlgorithmSHA256]) != strings.ToLower(expected[i].SHA256) {
 			return fmt.Errorf("subject %q sha256 mismatch", expected[i].Name)
 		}
-		if actual[i].Size != 0 && expected[i].SizeBytes != 0 && actual[i].Size != expected[i].SizeBytes {
+		if actual[i].Size != expected[i].SizeBytes {
 			return fmt.Errorf("subject %q size mismatch: bundle %d expected %d", expected[i].Name, actual[i].Size, expected[i].SizeBytes)
 		}
 		verifiedSubjects = append(verifiedSubjects, Subject{Name: expected[i].Name, SHA256: strings.ToLower(expected[i].SHA256), SizeBytes: expected[i].SizeBytes})
 	}
 	v.result.Attestation = AttestationResult{Valid: true, Subjects: verifiedSubjects}
+	return nil
+}
+
+func validateExpectedSubjects(subjects []Subject) error {
+	if len(subjects) > MaxStatementSubjects {
+		return fmt.Errorf("verification has too many subjects in expected set: %d > %d", len(subjects), MaxStatementSubjects)
+	}
+	seen := make(map[string]struct{}, len(subjects))
+	for i, subject := range subjects {
+		name, err := cleanSubjectName(subject.Name)
+		if err != nil {
+			return fmt.Errorf("expected subject[%d] name: %w", i, err)
+		}
+		if name != subject.Name {
+			return fmt.Errorf("expected subject[%d] has invalid name %q", i, subject.Name)
+		}
+		if _, exists := seen[name]; exists {
+			return fmt.Errorf("expected subjects contain duplicate name %q", name)
+		}
+		seen[name] = struct{}{}
+		if err := validateSHA256(subject.SHA256); err != nil {
+			return fmt.Errorf("expected subject %q sha256: %w", name, err)
+		}
+		if subject.SizeBytes < 0 {
+			return fmt.Errorf("expected subject %q size must not be negative", name)
+		}
+	}
+	return nil
+}
+
+func validateStatementSubjects(subjects []ResourceDescriptor) error {
+	seen := make(map[string]struct{}, len(subjects))
+	for i, subject := range subjects {
+		name, err := cleanSubjectName(subject.Name)
+		if err != nil {
+			return fmt.Errorf("statement subject[%d] name: %w", i, err)
+		}
+		if name != subject.Name {
+			return fmt.Errorf("statement subject[%d] has invalid name %q", i, subject.Name)
+		}
+		if _, exists := seen[name]; exists {
+			return fmt.Errorf("statement contains duplicate subject name %q", name)
+		}
+		seen[name] = struct{}{}
+		if len(subject.Digest) > MaxSubjectDigests {
+			return fmt.Errorf("subject %q contains too many digests: %d > %d", name, len(subject.Digest), MaxSubjectDigests)
+		}
+		for algorithm, digest := range subject.Digest {
+			if err := validateBoundedStrings(maxSecurityStringBytes, fmt.Sprintf("subject %q digest", name), algorithm, digest); err != nil {
+				return err
+			}
+			if strings.EqualFold(algorithm, DigestAlgorithmSHA256) && algorithm != DigestAlgorithmSHA256 {
+				return fmt.Errorf("subject %q contains ambiguous sha256 digest key %q", name, algorithm)
+			}
+		}
+		digest, ok := subject.Digest[DigestAlgorithmSHA256]
+		if !ok {
+			return fmt.Errorf("subject %q sha256 digest is required", name)
+		}
+		if err := validateSHA256(digest); err != nil {
+			return fmt.Errorf("subject %q sha256: %w", name, err)
+		}
+		if subject.Size < 0 {
+			return fmt.Errorf("subject %q size must not be negative", name)
+		}
+	}
 	return nil
 }
 
