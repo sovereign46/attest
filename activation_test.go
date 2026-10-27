@@ -133,6 +133,61 @@ func TestValidateActivationResult(t *testing.T) {
 	}
 }
 
+func TestValidateCurrentResult(t *testing.T) {
+	now := fixedTime.Add(time.Hour)
+	valid := VerifyResult{
+		State:        StateTrusted,
+		Signature:    SignatureResult{Valid: true},
+		Attestation:  AttestationResult{Valid: true},
+		Transparency: TransparencyResult{Present: true, Valid: true, WitnessedAt: now},
+	}
+	for _, kind := range []PredicateKind{PredicateKindRelease, PredicateKindAdvisory, PredicateKindYank} {
+		t.Run(string(kind), func(t *testing.T) {
+			result := valid
+			result.PredicateKind = kind
+			if err := ValidateCurrentResult(result, kind, now); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	for _, kind := range []PredicateKind{"", "unknown"} {
+		t.Run("unsupported-"+string(kind), func(t *testing.T) {
+			result := valid
+			result.PredicateKind = kind
+			if err := ValidateCurrentResult(result, kind, now); err == nil {
+				t.Fatal("unsupported predicate kind passed current-result validation")
+			}
+		})
+	}
+	tests := []struct {
+		name   string
+		change func(*VerifyResult)
+	}{
+		{"predicate mismatch", func(r *VerifyResult) { r.PredicateKind = PredicateKindYank }},
+		{"warning", func(r *VerifyResult) { r.State = StateWarning }},
+		{"invalid signature", func(r *VerifyResult) { r.Signature.Valid = false }},
+		{"invalid subjects", func(r *VerifyResult) { r.Attestation.Valid = false }},
+		{"absent proof", func(r *VerifyResult) { r.Transparency.Present = false }},
+		{"invalid proof", func(r *VerifyResult) { r.Transparency.Valid = false }},
+		{"stale proof", func(r *VerifyResult) { r.Transparency.Stale = true }},
+		{"missing witness time", func(r *VerifyResult) { r.Transparency.WitnessedAt = time.Time{} }},
+		{"old witness time", func(r *VerifyResult) { r.Transparency.WitnessedAt = now.Add(-DefaultWitnessMaxAge - time.Nanosecond) }},
+		{"future witness time", func(r *VerifyResult) {
+			r.Transparency.WitnessedAt = now.Add(DefaultSignatureFutureSkew + time.Nanosecond)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := valid
+			result.PredicateKind = PredicateKindAdvisory
+			tt.change(&result)
+			if err := ValidateCurrentResult(result, PredicateKindAdvisory, now); err == nil {
+				t.Fatal("invalid current result passed validation")
+			}
+		})
+	}
+}
+
 func TestVerificationRejectsCryptographicallyValidFutureWitnessQuorum(t *testing.T) {
 	signing, submit, log, witness := mustKeyPair(t), mustKeyPair(t), mustKeyPair(t), mustKeyPair(t)
 	identity := Identity{Issuer: "issuer", Subject: "release"}

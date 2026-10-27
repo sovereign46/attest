@@ -67,11 +67,38 @@ func ValidateActivationTrust(root TrustRoot, identity IdentityPolicy, expectedPu
 	return fmt.Errorf("pinned signing key missing from trust root")
 }
 
-// ValidateActivationResult requires a trusted Verify result with valid signature,
-// expected subjects, and present, valid witness evidence no older than 24 hours.
-// Witness timestamps may be at most DefaultSignatureFutureSkew ahead of now.
-// Zero now uses wall time. This never disables freshness or changes Verify's
-// historical behavior, even if a result was obtained with a relaxed witness age.
+// ValidateCurrentResult requires a trusted Verify result for the exact expected
+// release, advisory, or yank predicate, with valid subjects and present, valid
+// witness evidence no older than 24 hours. Witness timestamps may be at most
+// DefaultSignatureFutureSkew ahead of now. Zero now uses wall time.
+//
+// This is a policy check, not cryptographic verification: the result must come
+// from Verify with authenticated current trust, pinned ExpectedIdentity, the same
+// ExpectedPredicateKind, production mode, and strict warnings. After long-running
+// work, rerun Verify at the current time against current authenticated trust, then
+// validate that new result. Rechecking an old result alone cannot detect newly
+// effective trust-root expiry or revocations.
+func ValidateCurrentResult(result VerifyResult, expectedPredicateKind PredicateKind, now time.Time) error {
+	switch expectedPredicateKind {
+	case PredicateKindRelease, PredicateKindAdvisory, PredicateKindYank:
+	default:
+		return fmt.Errorf("current result requires an exact supported predicate kind")
+	}
+	return validateCurrentResult(
+		result,
+		expectedPredicateKind,
+		now,
+		fmt.Sprintf("current result requires a trusted %s signature, subjects and fresh transparency", expectedPredicateKind),
+		"current result requires nonmissing, nonfuture witness evidence at most 24h old",
+	)
+}
+
+// ValidateActivationResult requires a trusted release Verify result with valid
+// signature, expected subjects, and present, valid witness evidence no older than
+// 24 hours. Witness timestamps may be at most DefaultSignatureFutureSkew ahead
+// of now. Zero now uses wall time. This never disables freshness or changes
+// Verify's historical behavior, even if a result was obtained with a relaxed
+// witness age.
 //
 // This is a policy check, not cryptographic verification: the result must come
 // from Verify with authenticated trust, pinned ExpectedIdentity, production mode
@@ -79,15 +106,25 @@ func ValidateActivationTrust(root TrustRoot, identity IdentityPolicy, expectedPu
 // against current authenticated trust, then validate that new result. Rechecking
 // an old result alone cannot detect newly effective trust-root expiry/revocations.
 func ValidateActivationResult(result VerifyResult, now time.Time) error {
+	return validateCurrentResult(
+		result,
+		PredicateKindRelease,
+		now,
+		"activation requires a trusted release signature, subjects and fresh transparency",
+		"activation requires nonmissing, nonfuture witness evidence at most 24h old",
+	)
+}
+
+func validateCurrentResult(result VerifyResult, expectedPredicateKind PredicateKind, now time.Time, invalidResult, invalidWitnessTime string) error {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
 	proof := result.Transparency
-	if result.State != StateTrusted || result.PredicateKind != PredicateKindRelease || !result.Signature.Valid || !result.Attestation.Valid || !proof.Present || !proof.Valid || proof.Stale {
-		return fmt.Errorf("activation requires a trusted release signature, subjects and fresh transparency")
+	if result.State != StateTrusted || result.PredicateKind != expectedPredicateKind || !result.Signature.Valid || !result.Attestation.Valid || !proof.Present || !proof.Valid || proof.Stale {
+		return fmt.Errorf("%s", invalidResult)
 	}
 	if proof.WitnessedAt.IsZero() || proof.WitnessedAt.After(now.Add(DefaultSignatureFutureSkew)) || proof.WitnessedAt.Add(DefaultWitnessMaxAge).Before(now) {
-		return fmt.Errorf("activation requires nonmissing, nonfuture witness evidence at most 24h old")
+		return fmt.Errorf("%s", invalidWitnessTime)
 	}
 	return nil
 }
