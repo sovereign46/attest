@@ -29,6 +29,9 @@ func ValidateTrustRoot(root TrustRoot) error {
 }
 
 func validateTrustRoot(root TrustRoot) (TrustRoot, error) {
+	if err := validateTrustRootResourceBounds(root); err != nil {
+		return TrustRoot{}, validationError("trust-root-resource-limit", "%v", err)
+	}
 	fingerprint, err := trustRootFingerprint(root)
 	if err != nil {
 		return TrustRoot{}, validationError("trust-root-fingerprint-failed", "trust root fingerprint: %v", err)
@@ -37,11 +40,7 @@ func validateTrustRoot(root TrustRoot) (TrustRoot, error) {
 		return root, nil
 	}
 
-	schema := root.Schema
-	if schema == 0 {
-		schema = SchemaVersion
-	}
-	if schema != SchemaVersion {
+	if root.Schema != SchemaVersion {
 		return TrustRoot{}, validationError("trust-root-schema-unsupported", "unsupported trust root schema %d", root.Schema)
 	}
 	if len(root.SigningKeys) == 0 {
@@ -57,6 +56,12 @@ func validateTrustRoot(root TrustRoot) (TrustRoot, error) {
 				return TrustRoot{}, validationError("signing-identity-required", "signing key %q must declare issuer and subject when requireSigningIdentity is true", key.KeyID)
 			}
 		}
+	}
+	if err := validateTransparencyStatus(root.TransparencyStatus); err != nil {
+		return TrustRoot{}, err
+	}
+	if err := validateIdentityRevocations(root.IdentityRevocations); err != nil {
+		return TrustRoot{}, err
 	}
 	compiledSigsum, err := validateSigsumTrustRoot(root.Sigsum, signingKeys, signingPublics)
 	if err != nil {
@@ -113,7 +118,37 @@ func validateSigsumTrustRoot(root SigsumTrustRoot, signingKeys map[string]Truste
 	if err != nil {
 		return nil, validationError("sigsum-policy-invalid", "sigsum policy: %v", err)
 	}
+	if policyText != "" {
+		expectedLogs, expectedWitnesses, err := canonicalSigsumPolicyMirrors(compiled.policy)
+		if err != nil {
+			return nil, validationError("sigsum-role-key-reuse", "%v", err)
+		}
+		if compiled.policy.ProcessQuorum(witnessSetProcessor{}).(bool) {
+			return nil, validationError("sigsum-quorum-empty", "sigsum policy must require at least one witness")
+		}
+		if root.Quorum != 0 {
+			return nil, validationError("sigsum-policy-quorum-conflict", "sigsum quorum must be encoded only in the embedded policy")
+		}
+		if err := validateSigsumPolicyMirror("sigsum.logs", root.Logs, expectedLogs); err != nil {
+			return nil, err
+		}
+		if err := validateSigsumPolicyMirror("sigsum.witnesses", root.Witnesses, expectedWitnesses); err != nil {
+			return nil, err
+		}
+	}
 	return compiled, nil
+}
+
+func validateSigsumPolicyMirror(field string, actual, expected []TrustedKey) error {
+	if len(actual) != len(expected) {
+		return validationError("sigsum-policy-mirror-mismatch", "%s must exactly mirror the embedded policy in canonical order", field)
+	}
+	for i := range expected {
+		if actual[i] != expected[i] {
+			return validationError("sigsum-policy-mirror-mismatch", "%s[%d] must exactly mirror the embedded policy in canonical order", field, i)
+		}
+	}
+	return nil
 }
 
 func validateTrustedKeyList(field string, keys []TrustedKey) (map[string]TrustedKey, map[string]string, error) {
@@ -185,6 +220,33 @@ func validateSigsumSubmitKeys(keys []SigsumSubmitKey, signingKeys map[string]Tru
 		}
 		byID[keyID] = struct{}{}
 		byPublicKey[publicKeyID] = keyID
+	}
+	return nil
+}
+
+func validateTransparencyStatus(status TransparencyStatus) error {
+	switch status.State {
+	case "", TransparencyOperational, TransparencyDegraded, TransparencyOffline, TransparencyCompromised:
+		return nil
+	default:
+		return validationError("transparency-status-invalid", "unsupported transparency status %q", status.State)
+	}
+}
+
+func validateIdentityRevocations(revocations []IdentityRevocation) error {
+	seen := make(map[string]struct{}, len(revocations))
+	for i, revocation := range revocations {
+		if strings.TrimSpace(revocation.Issuer) == "" || strings.TrimSpace(revocation.Subject) == "" {
+			return validationError("identity-revocation-invalid", "identityRevocations[%d] requires issuer and subject", i)
+		}
+		if revocation.Issuer != strings.TrimSpace(revocation.Issuer) || revocation.Subject != strings.TrimSpace(revocation.Subject) {
+			return validationError("identity-revocation-invalid", "identityRevocations[%d] issuer and subject must not contain leading or trailing whitespace", i)
+		}
+		identity := revocation.Issuer + "\x00" + revocation.Subject
+		if _, exists := seen[identity]; exists {
+			return validationError("identity-revocation-duplicate", "identityRevocations contains duplicate identity %q/%q", revocation.Issuer, revocation.Subject)
+		}
+		seen[identity] = struct{}{}
 	}
 	return nil
 }

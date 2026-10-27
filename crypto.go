@@ -22,6 +22,9 @@ func GenerateKeyPair() (KeyPair, error) {
 }
 
 func ParsePrivateKey(raw string) (ed25519.PrivateKey, error) {
+	if err := validateBoundedString(raw, maxSecurityStringBytes, "private key"); err != nil {
+		return nil, err
+	}
 	decoded, err := decodeBase64Flexible(strings.TrimSpace(raw))
 	if err != nil {
 		return nil, err
@@ -36,6 +39,9 @@ func ParsePrivateKey(raw string) (ed25519.PrivateKey, error) {
 }
 
 func ParsePublicKey(raw string) (ed25519.PublicKey, error) {
+	if err := validateBoundedString(raw, maxSecurityStringBytes, "public key"); err != nil {
+		return nil, err
+	}
 	decoded, err := decodeBase64Flexible(strings.TrimSpace(raw))
 	if err != nil {
 		return nil, err

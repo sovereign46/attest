@@ -5,13 +5,23 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
+	"unicode"
 )
 
 func SubjectFromFile(options SubjectFileOptions) (Subject, error) {
 	if strings.TrimSpace(options.Path) == "" {
 		return Subject{}, fmt.Errorf("file path is required")
+	}
+	name := options.Name
+	if name == "" {
+		name = filepath.Base(options.Path)
+	}
+	name, err := cleanSubjectName(name)
+	if err != nil {
+		return Subject{}, err
 	}
 	if options.RequireGGUF {
 		if err := ValidateGGUF(options.Path); err != nil {
@@ -19,14 +29,6 @@ func SubjectFromFile(options SubjectFileOptions) (Subject, error) {
 		}
 	}
 	digest, size, err := SHA256File(options.Path)
-	if err != nil {
-		return Subject{}, err
-	}
-	name := strings.TrimSpace(options.Name)
-	if name == "" {
-		name = filepath.Base(options.Path)
-	}
-	name, err = cleanSubjectName(name)
 	if err != nil {
 		return Subject{}, err
 	}
@@ -42,14 +44,30 @@ func SubjectFromBytes(name string, body []byte) (Subject, error) {
 }
 
 func cleanSubjectName(name string) (string, error) {
-	name = strings.TrimSpace(name)
+	if err := validateBoundedString(name, maxSecurityStringBytes, "subject name"); err != nil {
+		return "", err
+	}
 	if name == "" {
 		return "", fmt.Errorf("subject name is required")
 	}
-	if name == "." || name == string(filepath.Separator) || strings.Contains(name, "\x00") || strings.Contains(filepath.ToSlash(name), "../") || strings.HasPrefix(filepath.ToSlash(name), "../") || strings.HasPrefix(filepath.ToSlash(name), "/") {
-		return "", fmt.Errorf("unsafe subject name %q", name)
+	if strings.TrimSpace(name) != name {
+		return "", fmt.Errorf("subject name must not contain leading or trailing whitespace")
 	}
-	return filepath.ToSlash(name), nil
+	if strings.ContainsRune(name, '\\') {
+		return "", fmt.Errorf("subject name must use forward slashes")
+	}
+	if path.IsAbs(name) || path.Clean(name) != name {
+		return "", fmt.Errorf("subject name %q is not a canonical relative path", name)
+	}
+	for _, segment := range strings.Split(name, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return "", fmt.Errorf("subject name %q contains an invalid path segment", name)
+		}
+	}
+	if strings.IndexFunc(name, unicode.IsControl) >= 0 {
+		return "", fmt.Errorf("subject name %q contains a control character", name)
+	}
+	return name, nil
 }
 
 func ValidateGGUF(path string) error {

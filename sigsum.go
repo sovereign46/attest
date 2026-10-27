@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -27,6 +29,10 @@ func verifySigsumTransparency(bundle Bundle, root TrustRoot, signingKey TrustedK
 		return result
 	}
 	result.Present = true
+	if err := validateSigsumProofResourceBounds(bundle.Sigsum.Proof); err != nil {
+		result.VerificationDetail = err.Error()
+		return result
+	}
 	compiled, err := sigsumVerificationPolicy(root)
 	if err != nil {
 		result.VerificationDetail = "Sigsum trust root: " + err.Error()
@@ -44,8 +50,10 @@ func verifySigsumTransparency(bundle Bundle, root TrustRoot, signingKey TrustedK
 		return result
 	}
 	origin := types.SigsumCheckpointOrigin(&logKey)
-	verified, witnessedAt := countVerifiedWitnesses(proof.TreeHead.TreeHead, proof.TreeHead.Cosignatures, compiled.witnessKeys, origin)
+	verified, witnessedAt, freshQuorum := countVerifiedWitnesses(proof.TreeHead.TreeHead, proof.TreeHead.Cosignatures, compiled.witnessKeys, origin, compiled.policy, now, maxAge)
 	result.VerifiedWitnesses = verified
+	// WitnessedAt is the oldest member of the freshest nonfuture witness set
+	// that satisfies policy, not merely the newest individual cosignature.
 	result.WitnessedAt = witnessedAt
 	msg, err := sigsumMessageHash(bundle.Envelope)
 	if err != nil {
@@ -69,15 +77,19 @@ func verifySigsumTransparency(bundle Bundle, root TrustRoot, signingKey TrustedK
 	if result.SubmitKeyID == "" {
 		result.SubmitKeyID = fmt.Sprintf("%x", proof.Leaf.KeyHash[:])
 	}
+	if verified == 0 || witnessedAt.IsZero() {
+		result.VerificationDetail = "Sigsum proof has no acceptable witness quorum timestamp"
+		return result
+	}
 	result.Valid = true
 	if root.Sigsum.Quorum > 0 {
 		result.VerificationDetail = fmt.Sprintf("Sigsum proof verified with %d/%d trusted witnesses", verified, root.Sigsum.Quorum)
 	} else {
 		result.VerificationDetail = fmt.Sprintf("Sigsum proof verified with %d trusted witnesses", verified)
 	}
-	if maxAge > 0 && !witnessedAt.IsZero() && witnessedAt.Add(maxAge).Before(now) {
+	if maxAge > 0 && !freshQuorum {
 		result.Stale = true
-		result.VerificationDetail = fmt.Sprintf("Sigsum tree head is stale: witnessed at %s, max age %s", witnessedAt.Format(time.RFC3339), maxAge)
+		result.VerificationDetail = fmt.Sprintf("Sigsum witness quorum is stale: freshest quorum at %s, max age %s", witnessedAt.Format(time.RFC3339), maxAge)
 	}
 	return result
 }
@@ -198,24 +210,70 @@ func trustedSigsumKeys(keys []TrustedKey) (map[sigcrypto.Hash]sigcrypto.PublicKe
 	return trusted, ids, nil
 }
 
-func countVerifiedWitnesses(treeHead types.TreeHead, cosignatures map[sigcrypto.Hash]types.Cosignature, witnesses map[sigcrypto.Hash]sigcrypto.PublicKey, origin string) (int, time.Time) {
-	count := 0
-	var newest time.Time
-	for keyHash, publicKey := range witnesses {
-		cosignature, ok := cosignatures[keyHash]
-		if !ok {
-			continue
-		}
-		if !cosignature.Verify(&publicKey, origin, &treeHead) {
-			continue
-		}
-		count++
-		timestamp := time.Unix(int64(cosignature.Timestamp), 0).UTC()
-		if timestamp.After(newest) {
-			newest = timestamp
+type witnessSetProcessor map[sigcrypto.Hash]struct{}
+
+func (w witnessSetProcessor) ProcessWitness(keyHash sigcrypto.Hash) any {
+	_, ok := w[keyHash]
+	return ok
+}
+
+func (w witnessSetProcessor) ProcessGroup(quorum int, members []any) any {
+	verified := 0
+	for _, member := range members {
+		if member.(bool) {
+			verified++
 		}
 	}
-	return count, newest
+	return verified >= quorum
+}
+
+func countVerifiedWitnesses(treeHead types.TreeHead, cosignatures map[sigcrypto.Hash]types.Cosignature, witnesses map[sigcrypto.Hash]sigcrypto.PublicKey, origin string, witnessPolicy *policy.Policy, now time.Time, maxAge time.Duration) (int, time.Time, bool) {
+	verifiedCount := 0
+	acceptableTimestamps := make(map[sigcrypto.Hash]time.Time)
+	latestAccepted := now.Add(DefaultSignatureFutureSkew)
+	for keyHash, publicKey := range witnesses {
+		cosignature, ok := cosignatures[keyHash]
+		if !ok || !cosignature.Verify(&publicKey, origin, &treeHead) {
+			continue
+		}
+		verifiedCount++
+		if cosignature.Timestamp > math.MaxInt64 {
+			continue
+		}
+		timestamp := time.Unix(int64(cosignature.Timestamp), 0).UTC()
+		if timestamp.After(latestAccepted) {
+			continue
+		}
+		acceptableTimestamps[keyHash] = timestamp
+	}
+	witnessedAt := freshestWitnessQuorumTime(acceptableTimestamps, witnessPolicy)
+	fresh := !witnessedAt.IsZero() && (maxAge <= 0 || !witnessedAt.Before(now.Add(-maxAge)))
+	return verifiedCount, witnessedAt, fresh
+}
+
+type witnessQuorumTimeProcessor map[sigcrypto.Hash]time.Time
+
+func (w witnessQuorumTimeProcessor) ProcessWitness(keyHash sigcrypto.Hash) any {
+	return w[keyHash]
+}
+
+func (w witnessQuorumTimeProcessor) ProcessGroup(quorum int, members []any) any {
+	timestamps := make([]time.Time, 0, len(members))
+	for _, member := range members {
+		timestamp := member.(time.Time)
+		if !timestamp.IsZero() {
+			timestamps = append(timestamps, timestamp)
+		}
+	}
+	if quorum <= 0 || len(timestamps) < quorum {
+		return time.Time{}
+	}
+	sort.Slice(timestamps, func(i, j int) bool { return timestamps[i].After(timestamps[j]) })
+	return timestamps[quorum-1]
+}
+
+func freshestWitnessQuorumTime(verified map[sigcrypto.Hash]time.Time, witnessPolicy *policy.Policy) time.Time {
+	return witnessPolicy.ProcessQuorum(witnessQuorumTimeProcessor(verified)).(time.Time)
 }
 
 func values[K comparable, V any](m map[K]V) []V {

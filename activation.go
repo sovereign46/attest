@@ -24,6 +24,9 @@ import (
 // Zero now uses wall time. An explicit time is for deterministic callers/tests.
 // Historical Verify semantics are intentionally unchanged.
 func ValidateActivationTrust(root TrustRoot, identity IdentityPolicy, expectedPublicKey string, now time.Time) error {
+	if err := validateBoundedStrings(maxSecurityStringBytes, "activation identity or public key", identity.KeyID, identity.Issuer, identity.Subject, expectedPublicKey); err != nil {
+		return err
+	}
 	if identity.KeyID == "" || identity.Issuer == "" || identity.Subject == "" || expectedPublicKey == "" {
 		return fmt.Errorf("activation requires pinned signing key/public key/identity")
 	}
@@ -80,8 +83,8 @@ func ValidateActivationResult(result VerifyResult, now time.Time) error {
 		now = time.Now().UTC()
 	}
 	proof := result.Transparency
-	if result.State != StateTrusted || !result.Signature.Valid || !result.Attestation.Valid || !proof.Present || !proof.Valid || proof.Stale {
-		return fmt.Errorf("activation requires trusted signature, subjects and fresh transparency")
+	if result.State != StateTrusted || result.PredicateKind != PredicateKindRelease || !result.Signature.Valid || !result.Attestation.Valid || !proof.Present || !proof.Valid || proof.Stale {
+		return fmt.Errorf("activation requires a trusted release signature, subjects and fresh transparency")
 	}
 	if proof.WitnessedAt.IsZero() || proof.WitnessedAt.After(now.Add(DefaultSignatureFutureSkew)) || proof.WitnessedAt.Add(DefaultWitnessMaxAge).Before(now) {
 		return fmt.Errorf("activation requires nonmissing, nonfuture witness evidence at most 24h old")

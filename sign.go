@@ -21,12 +21,19 @@ func Sign(ctx context.Context, options SignOptions) (Bundle, error) {
 		return Bundle{}, ctx.Err()
 	default:
 	}
+	if err := validateBoundedStrings(maxSecurityStringBytes, "signing key or identity field", options.PrivateKey, options.KeyID, options.Identity.Issuer, options.Identity.Subject); err != nil {
+		return Bundle{}, err
+	}
 	privateKey, err := ParsePrivateKey(options.PrivateKey)
 	if err != nil {
 		return Bundle{}, err
 	}
-	if strings.TrimSpace(options.KeyID) == "" {
+	keyID := strings.TrimSpace(options.KeyID)
+	if keyID == "" {
 		return Bundle{}, fmt.Errorf("key id is required")
+	}
+	if keyID != options.KeyID {
+		return Bundle{}, fmt.Errorf("key id must not contain leading or trailing whitespace")
 	}
 	if len(options.Subjects) == 0 {
 		return Bundle{}, fmt.Errorf("at least one subject is required")
@@ -37,8 +44,15 @@ func Sign(ctx context.Context, options SignOptions) (Bundle, error) {
 	subjects := append([]Subject(nil), options.Subjects...)
 	sort.Slice(subjects, func(i, j int) bool { return subjects[i].Name < subjects[j].Name })
 	for i, subject := range subjects {
-		if strings.TrimSpace(subject.Name) == "" {
-			return Bundle{}, fmt.Errorf("subjects[%d].name is required", i)
+		name, err := cleanSubjectName(subject.Name)
+		if err != nil {
+			return Bundle{}, fmt.Errorf("subjects[%d].name: %w", i, err)
+		}
+		if name != subject.Name {
+			return Bundle{}, fmt.Errorf("subjects[%d].name %q is invalid", i, subject.Name)
+		}
+		if i > 0 && subjects[i-1].Name == subject.Name {
+			return Bundle{}, fmt.Errorf("subjects contain duplicate name %q", subject.Name)
 		}
 		if err := validateSHA256(subject.SHA256); err != nil {
 			return Bundle{}, fmt.Errorf("subjects[%d].sha256: %w", i, err)
@@ -61,9 +75,15 @@ func Sign(ctx context.Context, options SignOptions) (Bundle, error) {
 		PredicateType: S46PredicateType,
 		Predicate:     predicate,
 	}
+	if err := validateStatementResourceBounds(statement); err != nil {
+		return Bundle{}, err
+	}
 	payload, err := canonicalJSON(statement)
 	if err != nil {
 		return Bundle{}, err
+	}
+	if len(payload) > maxJSONBytes {
+		return Bundle{}, fmt.Errorf("statement JSON exceeds %d-byte limit", maxJSONBytes)
 	}
 	signature := ed25519.Sign(privateKey, pae(InTotoPayloadType, payload))
 	bundle := Bundle{
@@ -75,12 +95,18 @@ func Sign(ctx context.Context, options SignOptions) (Bundle, error) {
 			Signatures:  []EnvelopeSignature{{KeyID: options.KeyID, Sig: encodeBase64(signature)}},
 		},
 	}
+	if err := validateBundleResourceBounds(bundle); err != nil {
+		return Bundle{}, fmt.Errorf("signed bundle exceeds consumer limits: %w", err)
+	}
 	if options.Sigsum != nil {
 		proof, err := createSigsumProof(ctx, bundle.Envelope, privateKey, *options.Sigsum)
 		if err != nil {
 			return Bundle{}, err
 		}
 		bundle.Sigsum = &SigsumProof{Proof: proof}
+	}
+	if _, err := MarshalBundle(bundle); err != nil {
+		return Bundle{}, fmt.Errorf("signed bundle exceeds consumer limits: %w", err)
 	}
 	return bundle, nil
 }
@@ -171,6 +197,9 @@ func pae(payloadType string, payload []byte) []byte {
 }
 
 func createSigsumProof(ctx context.Context, envelope DSSEEnvelope, signingPrivateKey ed25519.PrivateKey, options SigsumSignOptions) (string, error) {
+	if err := validateSigsumSignOptionsResourceBounds(options); err != nil {
+		return "", err
+	}
 	submitPrivateKey := signingPrivateKey
 	if strings.TrimSpace(options.SubmitPrivateKey) != "" {
 		parsedSubmitKey, err := ParsePrivateKey(options.SubmitPrivateKey)

@@ -2,8 +2,8 @@
 
 `s46-attest` is security-sensitive release tooling. Before a production v1 tag, run an external review focused on:
 
-1. DSSE PAE/signature verification and fail-closed behavior.
-2. in-toto subject digest matching and GGUF validation assumptions.
+1. DSSE PAE/signature verification, strict JSON parsing, and fail-closed behavior.
+2. Exact in-toto subject name/digest/size matching, release-to-current-registry binding, and GGUF validation assumptions.
 3. Sigsum proof binding to the DSSE envelope, separate submit-key operation, live log submission, inclusion proof verification, witness cosignature verification, and production quorum/staleness policy.
 4. TUF-supplied trust root authenticity/freshness, `transparencyStatus`, and `identityRevocations` interpretation.
 5. Typed release/advisory/yank predicate semantics and registry integration boundaries.
@@ -36,4 +36,6 @@ Operational policy:
 - Set `requireSigningIdentity` for production trust roots and bind submit keys to signing key IDs.
 - Treat `transparencyStatus: compromised` as a hard refusal for signatures at or after `since`.
 - Use `--production` or `S46_ATTEST_PRODUCTION=1` for deployment pipelines that must fail closed on missing, invalid, or stale transparency; use `--strict` / `S46_ATTEST_STRICT=1` when all warnings should be non-zero.
+- Authenticate release and current-registry bytes before following registry references. Signer trust alone does not establish which release or registry is current; use exact expected subjects and current activation checks.
+- Treat the signed release channel as descriptive metadata unless the consuming integration separately enforces it. Bind security-relevant cloud/offline modes in authenticated release or registry content.
 - Treat GGUF validation as header sanity checking only; it is not model-content scanning.

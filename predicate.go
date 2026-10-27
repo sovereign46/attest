@@ -6,6 +6,36 @@ import (
 )
 
 func validatePredicateSemantics(predicate Predicate) error {
+	if err := validateBoundedStrings(maxSecurityStringBytes, "predicate identity field",
+		predicate.BuildType, string(predicate.Kind), predicate.Signer.KeyID,
+		predicate.Signer.Algorithm, predicate.Signer.Identity.Issuer,
+		predicate.Signer.Identity.Subject); err != nil {
+		return err
+	}
+	if predicate.Release != nil {
+		if err := validateBoundedString(predicate.Release.Channel, maxSecurityStringBytes, "release channel"); err != nil {
+			return err
+		}
+	}
+	if predicate.Advisory != nil {
+		if err := validateBoundedStrings(maxSecurityStringBytes, "advisory field", predicate.Advisory.ID,
+			predicate.Advisory.Severity, predicate.Advisory.Summary, predicate.Advisory.URL); err != nil {
+			return err
+		}
+	}
+	if predicate.Yank != nil {
+		if len(predicate.Yank.ReplacedBy) > maxJSONCollectionItems {
+			return fmt.Errorf("yank replacements exceed %d-item limit", maxJSONCollectionItems)
+		}
+		if err := validateBoundedString(predicate.Yank.Reason, maxSecurityStringBytes, "yank reason"); err != nil {
+			return err
+		}
+		for _, replacement := range predicate.Yank.ReplacedBy {
+			if err := validateBoundedString(replacement, maxSecurityStringBytes, "yank replacement"); err != nil {
+				return err
+			}
+		}
+	}
 	if predicate.Kind == "" {
 		return fmt.Errorf("predicate kind is required")
 	}

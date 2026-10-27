@@ -8,13 +8,43 @@ import (
 )
 
 func TestSubjectFromFileRejectsUnsafeNames(t *testing.T) {
-	path := writeTinyGGUF(t)
-	for _, name := range []string{"../tiny.gguf", "/tmp/tiny.gguf", "safe/../tiny.gguf", "bad\x00name"} {
-		t.Run(name, func(t *testing.T) {
-			if _, err := SubjectFromFile(SubjectFileOptions{Path: path, Name: name, RequireGGUF: true}); err == nil {
-				t.Fatal("unsafe subject name accepted")
+	file := writeTinyGGUF(t)
+	tests := []struct {
+		name    string
+		subject string
+	}{
+		{name: "parent prefix", subject: "../tiny.gguf"},
+		{name: "absolute", subject: "/tmp/tiny.gguf"},
+		{name: "traversal", subject: "safe/../tiny.gguf"},
+		{name: "parent only", subject: ".."},
+		{name: "parent suffix", subject: "safe/.."},
+		{name: "current prefix", subject: "./tiny.gguf"},
+		{name: "current suffix", subject: "safe/."},
+		{name: "repeated slash", subject: "safe//tiny.gguf"},
+		{name: "trailing slash", subject: "safe/"},
+		{name: "leading whitespace", subject: " tiny.gguf"},
+		{name: "whitespace only", subject: " "},
+		{name: "backslash", subject: `safe\tiny.gguf`},
+		{name: "nul", subject: "bad\x00name"},
+		{name: "control", subject: "bad\x7fname"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := SubjectFromFile(SubjectFileOptions{Path: file, Name: tt.subject, RequireGGUF: true}); err == nil {
+				t.Fatalf("unsafe subject name %q accepted", tt.subject)
 			}
 		})
+	}
+}
+
+func TestSubjectNameAllowsCanonicalRelativeSlashPath(t *testing.T) {
+	const name = "registry/releases/v1.json"
+	subject, err := SubjectFromBytes(name, []byte(`{"release":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if subject.Name != name {
+		t.Fatalf("subject name = %q, want exact %q", subject.Name, name)
 	}
 }
 

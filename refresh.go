@@ -38,6 +38,9 @@ func RefreshTransparency(ctx context.Context, req VerifyRequest, options SigsumS
 	if err := ctx.Err(); err != nil {
 		return Bundle{}, err
 	}
+	if err := validateSigsumSignOptionsResourceBounds(options); err != nil {
+		return Bundle{}, err
+	}
 	if strings.TrimSpace(req.ExpectedIdentity.KeyID) == "" || strings.TrimSpace(req.ExpectedIdentity.Issuer) == "" || strings.TrimSpace(req.ExpectedIdentity.Subject) == "" {
 		return Bundle{}, fmt.Errorf("refresh requires pinned signing key ID, identity issuer and subject")
 	}

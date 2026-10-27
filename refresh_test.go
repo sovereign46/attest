@@ -198,7 +198,12 @@ func TestRefreshTransparencyTimeoutAndCancellation(t *testing.T) {
 			defer server.Close()
 			defer close(release)
 			options.Policy = strings.ReplaceAll(options.Policy, log.server.URL, server.URL)
-			req.TrustRoot.Sigsum.Policy = options.Policy
+			sigsumRoot, err := SigsumTrustRootFromPolicy("", options.Policy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sigsumRoot.SubmitKeys = req.TrustRoot.Sigsum.SubmitKeys
+			req.TrustRoot.Sigsum = sigsumRoot
 			options.Timeout = 100 * time.Millisecond
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()

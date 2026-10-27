@@ -2,6 +2,7 @@ package attest
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -22,6 +23,92 @@ func TestValidateTrustRootAcceptsHardenedRoot(t *testing.T) {
 	}
 	if !parsed.RequireSigningIdentity {
 		t.Fatal("requireSigningIdentity was not preserved")
+	}
+}
+
+func TestEmbeddedSigsumPolicyRequiresCanonicalMirrors(t *testing.T) {
+	signing := mustKeyPair(t)
+	logs := []KeyPair{mustKeyPair(t), mustKeyPair(t)}
+	witnesses := []KeyPair{mustKeyPair(t), mustKeyPair(t)}
+	policyText := fmt.Sprintf("log %s https://log-1.example\nlog %s https://log-2.example\nwitness witness-1 %s https://witness-1.example\nwitness witness-2 %s https://witness-2.example\ngroup witnesses all witness-1 witness-2\nquorum witnesses\n",
+		trustedKeyHex(t, TrustedKey{PublicKey: logs[0].PublicKey}),
+		trustedKeyHex(t, TrustedKey{PublicKey: logs[1].PublicKey}),
+		trustedKeyHex(t, TrustedKey{PublicKey: witnesses[0].PublicKey}),
+		trustedKeyHex(t, TrustedKey{PublicKey: witnesses[1].PublicKey}))
+	root, err := NewTrustRoot(TrustRootOptions{
+		SigningKeys:  []TrustedKey{{KeyID: "release", PublicKey: signing.PublicKey}},
+		SigsumPolicy: policyText,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateTrustRoot(root); err != nil {
+		t.Fatalf("canonical embedded policy mirrors were rejected: %v", err)
+	}
+
+	extra := mustKeyPair(t)
+	tests := []struct {
+		name   string
+		mutate func(*TrustRoot)
+		code   string
+	}{
+		{name: "missing logs", mutate: func(root *TrustRoot) { root.Sigsum.Logs = nil }, code: "sigsum-policy-mirror-mismatch"},
+		{name: "missing witnesses", mutate: func(root *TrustRoot) { root.Sigsum.Witnesses = nil }, code: "sigsum-policy-mirror-mismatch"},
+		{name: "extra log", mutate: func(root *TrustRoot) {
+			root.Sigsum.Logs = append(root.Sigsum.Logs, TrustedKey{KeyID: "extra-log", PublicKey: extra.PublicKey})
+		}, code: "sigsum-policy-mirror-mismatch"},
+		{name: "reordered logs", mutate: func(root *TrustRoot) {
+			root.Sigsum.Logs[0], root.Sigsum.Logs[1] = root.Sigsum.Logs[1], root.Sigsum.Logs[0]
+		}, code: "sigsum-policy-mirror-mismatch"},
+		{name: "reordered witnesses", mutate: func(root *TrustRoot) {
+			root.Sigsum.Witnesses[0], root.Sigsum.Witnesses[1] = root.Sigsum.Witnesses[1], root.Sigsum.Witnesses[0]
+		}, code: "sigsum-policy-mirror-mismatch"},
+		{name: "altered id", mutate: func(root *TrustRoot) { root.Sigsum.Logs[0].KeyID = "altered" }, code: "sigsum-policy-mirror-mismatch"},
+		{name: "altered url", mutate: func(root *TrustRoot) { root.Sigsum.Witnesses[0].URL = "https://other.example" }, code: "sigsum-policy-mirror-mismatch"},
+		{name: "added identity", mutate: func(root *TrustRoot) {
+			root.Sigsum.Witnesses[0].Identity = Identity{Issuer: "issuer", Subject: "subject"}
+		}, code: "sigsum-policy-mirror-mismatch"},
+		{name: "static quorum", mutate: func(root *TrustRoot) { root.Sigsum.Quorum = 1 }, code: "sigsum-policy-quorum-conflict"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := mutateTrustRoot(root, tt.mutate)
+			err := ValidateTrustRoot(mutated)
+			if !IsValidationError(err, tt.code) {
+				t.Fatalf("ValidateTrustRoot error = %v, want validation code %q", err, tt.code)
+			}
+			body, err := MarshalTrustRoot(mutated)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ParseTrustRoot(body); !IsValidationError(err, tt.code) {
+				t.Fatalf("ParseTrustRoot error = %v, want validation code %q", err, tt.code)
+			}
+		})
+	}
+}
+
+func TestEmbeddedSigsumPolicyRejectsLogWitnessKeyReuse(t *testing.T) {
+	signing := mustKeyPair(t)
+	shared := mustKeyPair(t)
+	otherLog := mustKeyPair(t)
+	otherWitness := mustKeyPair(t)
+	sharedHex := trustedKeyHex(t, TrustedKey{PublicKey: shared.PublicKey})
+	policyText := fmt.Sprintf("log %s\nwitness witness %s\ngroup witnesses all witness\nquorum witnesses\n", sharedHex, sharedHex)
+	if _, err := SigsumTrustRootFromPolicy("", policyText); err == nil {
+		t.Fatal("SigsumTrustRootFromPolicy accepted one key as both log and witness")
+	}
+	root := TrustRoot{
+		Schema:      SchemaVersion,
+		SigningKeys: []TrustedKey{{KeyID: "release", PublicKey: signing.PublicKey}},
+		Sigsum: SigsumTrustRoot{
+			Policy:    policyText,
+			Logs:      []TrustedKey{{KeyID: "other-log", PublicKey: otherLog.PublicKey}},
+			Witnesses: []TrustedKey{{KeyID: "other-witness", PublicKey: otherWitness.PublicKey}},
+		},
+	}
+	if err := ValidateTrustRoot(root); !IsValidationError(err, "sigsum-role-key-reuse") {
+		t.Fatalf("ValidateTrustRoot error = %v, want sigsum-role-key-reuse", err)
 	}
 }
 
@@ -77,6 +164,13 @@ func TestValidateTrustRootRejectsAmbiguousOrMutablePolicy(t *testing.T) {
 		code   string
 	}{
 		{
+			name: "missing schema",
+			mutate: func(root *TrustRoot) {
+				root.Schema = 0
+			},
+			code: "trust-root-schema-unsupported",
+		},
+		{
 			name: "duplicate signing key id",
 			mutate: func(root *TrustRoot) {
 				root.SigningKeys = append(root.SigningKeys, TrustedKey{KeyID: root.SigningKeys[0].KeyID, PublicKey: otherSigning.PublicKey, Identity: root.SigningKeys[0].Identity})
@@ -111,6 +205,17 @@ func TestValidateTrustRootRejectsAmbiguousOrMutablePolicy(t *testing.T) {
 				root.Sigsum.Policy = "not a policy\n"
 			},
 			code: "sigsum-policy-invalid",
+		},
+		{
+			name: "policy permits no witnesses",
+			mutate: func(root *TrustRoot) {
+				public, err := ParsePublicKey(root.Sigsum.Logs[0].PublicKey)
+				if err != nil {
+					t.Fatal(err)
+				}
+				root.Sigsum.Policy = fmt.Sprintf("log %x\nquorum none\n", public)
+			},
+			code: "sigsum-quorum-empty",
 		},
 		{
 			name: "submit key without transparency config",
@@ -155,6 +260,28 @@ func TestValidateTrustRootRejectsAmbiguousOrMutablePolicy(t *testing.T) {
 				root.Sigsum.Quorum = len(root.Sigsum.Witnesses) + 1
 			},
 			code: "sigsum-quorum-exceeds-witnesses",
+		},
+		{
+			name: "unknown transparency status",
+			mutate: func(root *TrustRoot) {
+				root.TransparencyStatus.State = "unknown"
+			},
+			code: "transparency-status-invalid",
+		},
+		{
+			name: "incomplete identity revocation",
+			mutate: func(root *TrustRoot) {
+				root.IdentityRevocations = []IdentityRevocation{{Issuer: "issuer"}}
+			},
+			code: "identity-revocation-invalid",
+		},
+		{
+			name: "duplicate identity revocation",
+			mutate: func(root *TrustRoot) {
+				revocation := IdentityRevocation{Issuer: "issuer", Subject: "subject"}
+				root.IdentityRevocations = []IdentityRevocation{revocation, revocation}
+			},
+			code: "identity-revocation-duplicate",
 		},
 	}
 	for _, tt := range tests {

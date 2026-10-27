@@ -4,14 +4,263 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
+
+	sigcrypto "sigsum.org/sigsum-go/pkg/crypto"
+	"sigsum.org/sigsum-go/pkg/types"
 )
+
+func TestWitnessTimestampQuorumExcludesFutureCosignatures(t *testing.T) {
+	log := mustKeyPair(t)
+	logPrivate, err := ParsePrivateKey(log.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logSigner, err := sigsumSignerFromEd25519(logPrivate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	witnesses := []KeyPair{mustKeyPair(t), mustKeyPair(t), mustKeyPair(t)}
+	trusted := make([]TrustedKey, 0, len(witnesses))
+	for i, witness := range witnesses {
+		trusted = append(trusted, TrustedKey{KeyID: fmt.Sprintf("witness-%d", i), PublicKey: witness.PublicKey})
+	}
+	compiled, err := compileSigsumTrustRoot(SigsumTrustRoot{Logs: []TrustedKey{{KeyID: "log", PublicKey: log.PublicKey}}, Witnesses: trusted, Quorum: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	treeHead := types.TreeHead{Size: 1, RootHash: sigcrypto.HashBytes([]byte("root"))}
+	logPublic := logSigner.Public()
+	origin := types.SigsumCheckpointOrigin(&logPublic)
+	now := fixedTime.Add(48 * time.Hour)
+	oldestAcceptable := now.Add(-time.Hour)
+	cosignatures := make(map[sigcrypto.Hash]types.Cosignature)
+	addCosignature := func(index int, timestamp time.Time) {
+		t.Helper()
+		private, err := ParsePrivateKey(witnesses[index].PrivateKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		signer, err := sigsumSignerFromEd25519(private)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cosignature, err := treeHead.Cosign(signer, origin, uint64(timestamp.Unix()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		public := signer.Public()
+		cosignatures[sigcrypto.HashBytes(public[:])] = cosignature
+	}
+	addCosignature(0, oldestAcceptable)
+	addCosignature(1, now.Add(DefaultSignatureFutureSkew+time.Second))
+
+	verified, quorumTime, freshQuorum := countVerifiedWitnesses(treeHead, cosignatures, compiled.witnessKeys, origin, compiled.policy, now, DefaultWitnessMaxAge)
+	if verified != 2 || !quorumTime.IsZero() || freshQuorum {
+		t.Fatalf("future witness completed quorum: verified=%d quorumTime=%s freshQuorum=%t", verified, quorumTime, freshQuorum)
+	}
+
+	addCosignature(2, now)
+	verified, quorumTime, freshQuorum = countVerifiedWitnesses(treeHead, cosignatures, compiled.witnessKeys, origin, compiled.policy, now, DefaultWitnessMaxAge)
+	if verified != 3 || !quorumTime.Equal(oldestAcceptable) || !freshQuorum {
+		t.Fatalf("acceptable witnesses did not form freshest quorum: verified=%d quorumTime=%s freshQuorum=%t", verified, quorumTime, freshQuorum)
+	}
+}
+
+func TestWitnessTimestampIntegerBounds(t *testing.T) {
+	log := mustKeyPair(t)
+	logPrivate, err := ParsePrivateKey(log.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logSigner, err := sigsumSignerFromEd25519(logPrivate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	witness := mustKeyPair(t)
+	compiled, err := compileSigsumTrustRoot(SigsumTrustRoot{
+		Logs:      []TrustedKey{{KeyID: "log", PublicKey: log.PublicKey}},
+		Witnesses: []TrustedKey{{KeyID: "witness", PublicKey: witness.PublicKey}},
+		Quorum:    1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	treeHead := types.TreeHead{Size: 1, RootHash: sigcrypto.HashBytes([]byte("root"))}
+	logPublic := logSigner.Public()
+	origin := types.SigsumCheckpointOrigin(&logPublic)
+	now := time.Unix(math.MaxInt64, 0).UTC()
+
+	tests := []struct {
+		name      string
+		timestamp uint64
+		wantTime  time.Time
+		wantFresh bool
+	}{
+		{name: "max int64", timestamp: math.MaxInt64, wantTime: now, wantFresh: true},
+		{name: "max int64 plus one", timestamp: math.MaxInt64 + 1},
+		{name: "max uint64", timestamp: math.MaxUint64},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			keyHash, cosignature := mustWitnessCosignature(t, treeHead, origin, witness, tt.timestamp)
+			verified, quorumTime, freshQuorum := countVerifiedWitnesses(
+				treeHead,
+				map[sigcrypto.Hash]types.Cosignature{keyHash: cosignature},
+				compiled.witnessKeys,
+				origin,
+				compiled.policy,
+				now,
+				-time.Second,
+			)
+			if verified != 1 {
+				t.Fatalf("verified witnesses = %d, want 1", verified)
+			}
+			if !quorumTime.Equal(tt.wantTime) || freshQuorum != tt.wantFresh {
+				t.Fatalf("timestamp %d produced quorumTime=%s freshQuorum=%t, want quorumTime=%s freshQuorum=%t", tt.timestamp, quorumTime, freshQuorum, tt.wantTime, tt.wantFresh)
+			}
+		})
+	}
+}
+
+func TestNestedWitnessQuorumExcludesOverflowTimestamp(t *testing.T) {
+	log := mustKeyPair(t)
+	witnesses := []KeyPair{mustKeyPair(t), mustKeyPair(t), mustKeyPair(t)}
+	keyHex := func(pair KeyPair) string {
+		public, err := ParsePublicKey(pair.PublicKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		key, err := sigsumPublicKeyFromEd25519(public)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hex.EncodeToString(key[:])
+	}
+	policyText := fmt.Sprintf("log %s\nwitness a %s\nwitness b %s\nwitness c %s\ngroup alternatives any a b\ngroup root all alternatives c\nquorum root\n",
+		keyHex(log), keyHex(witnesses[0]), keyHex(witnesses[1]), keyHex(witnesses[2]))
+	compiled, err := compileSigsumTrustRoot(SigsumTrustRoot{Policy: policyText})
+	if err != nil {
+		t.Fatal(err)
+	}
+	logPrivate, err := ParsePrivateKey(log.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logSigner, err := sigsumSignerFromEd25519(logPrivate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	treeHead := types.TreeHead{Size: 1, RootHash: sigcrypto.HashBytes([]byte("root"))}
+	logPublic := logSigner.Public()
+	origin := types.SigsumCheckpointOrigin(&logPublic)
+	now := fixedTime.Add(48 * time.Hour)
+	cosignatures := make(map[sigcrypto.Hash]types.Cosignature)
+	keyHash, cosignature := mustWitnessCosignature(t, treeHead, origin, witnesses[1], math.MaxUint64)
+	cosignatures[keyHash] = cosignature
+	keyHash, cosignature = mustWitnessCosignature(t, treeHead, origin, witnesses[2], uint64(now.Unix()))
+	cosignatures[keyHash] = cosignature
+
+	verified, quorumTime, freshQuorum := countVerifiedWitnesses(treeHead, cosignatures, compiled.witnessKeys, origin, compiled.policy, now, -time.Second)
+	if verified != 2 || !quorumTime.IsZero() || freshQuorum {
+		t.Fatalf("overflow timestamp completed nested quorum: verified=%d quorumTime=%s freshQuorum=%t", verified, quorumTime, freshQuorum)
+	}
+}
+
+func TestWitnessFreshnessRequiresPolicyQuorum(t *testing.T) {
+	log := mustKeyPair(t)
+	logPrivate, err := ParsePrivateKey(log.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logSigner, err := sigsumSignerFromEd25519(logPrivate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	witnesses := []KeyPair{mustKeyPair(t), mustKeyPair(t), mustKeyPair(t)}
+	trusted := make([]TrustedKey, 0, len(witnesses))
+	for i, witness := range witnesses {
+		trusted = append(trusted, TrustedKey{KeyID: fmt.Sprintf("witness-%d", i), PublicKey: witness.PublicKey})
+	}
+	compiled, err := compileSigsumTrustRoot(SigsumTrustRoot{Logs: []TrustedKey{{KeyID: "log", PublicKey: log.PublicKey}}, Witnesses: trusted, Quorum: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	treeHead := types.TreeHead{Size: 1, RootHash: sigcrypto.HashBytes([]byte("root"))}
+	logPublic := logSigner.Public()
+	origin := types.SigsumCheckpointOrigin(&logPublic)
+	now := fixedTime.Add(48 * time.Hour)
+	cosignatures := make(map[sigcrypto.Hash]types.Cosignature)
+	for i, witness := range witnesses {
+		private, err := ParsePrivateKey(witness.PrivateKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		signer, err := sigsumSignerFromEd25519(private)
+		if err != nil {
+			t.Fatal(err)
+		}
+		timestamp := fixedTime
+		if i == len(witnesses)-1 {
+			timestamp = now
+		}
+		cosignature, err := treeHead.Cosign(signer, origin, uint64(timestamp.Unix()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		public := signer.Public()
+		cosignatures[sigcrypto.HashBytes(public[:])] = cosignature
+	}
+	verified, quorumTime, freshQuorum := countVerifiedWitnesses(treeHead, cosignatures, compiled.witnessKeys, origin, compiled.policy, now, DefaultWitnessMaxAge)
+	if verified != 3 || !quorumTime.Equal(fixedTime) || freshQuorum {
+		t.Fatalf("one fresh witness satisfied 2-of-3 freshness: verified=%d quorumTime=%s freshQuorum=%t", verified, quorumTime, freshQuorum)
+	}
+}
 
 // Semantically adapted from sigsum-go/pkg/policy/policy_test.go's quorum
 // coverage: quorum success requires enough trusted witness cosignatures; missing
 // or stale witnessing is a warning, not a signature failure.
+func TestFreshestWitnessQuorumTimeHandlesNestedAlternatives(t *testing.T) {
+	log := mustKeyPair(t)
+	witnesses := []KeyPair{mustKeyPair(t), mustKeyPair(t), mustKeyPair(t)}
+	keyHex := func(pair KeyPair) string {
+		public, err := ParsePublicKey(pair.PublicKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		key, err := sigsumPublicKeyFromEd25519(public)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hex.EncodeToString(key[:])
+	}
+	policyText := fmt.Sprintf("log %s\nwitness a %s\nwitness b %s\nwitness c %s\ngroup alternatives any a b\ngroup root all alternatives c\nquorum root\n",
+		keyHex(log), keyHex(witnesses[0]), keyHex(witnesses[1]), keyHex(witnesses[2]))
+	compiled, err := compileSigsumTrustRoot(SigsumTrustRoot{Policy: policyText})
+	if err != nil {
+		t.Fatal(err)
+	}
+	times := []time.Time{fixedTime, fixedTime.Add(3 * time.Hour), fixedTime.Add(2 * time.Hour)}
+	verified := make(map[sigcrypto.Hash]time.Time, len(witnesses))
+	for index, witness := range witnesses {
+		public, err := ParsePublicKey(witness.PublicKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		key, err := sigsumPublicKeyFromEd25519(public)
+		if err != nil {
+			t.Fatal(err)
+		}
+		verified[sigcrypto.HashBytes(key[:])] = times[index]
+	}
+	if got := freshestWitnessQuorumTime(verified, compiled.policy); !got.Equal(times[2]) {
+		t.Fatalf("nested freshest quorum time = %s, want %s", got, times[2])
+	}
+}
+
 func TestSigsumSubmitPrivateKeyMustDifferFromSigningKey(t *testing.T) {
 	subject, err := SubjectFromFile(SubjectFileOptions{Path: writeTinyGGUF(t), Name: "tiny.gguf", RequireGGUF: true})
 	if err != nil {
@@ -151,10 +400,32 @@ func TestSigsumQuorumPolicy(t *testing.T) {
 	}
 }
 
+func mustWitnessCosignature(t *testing.T, treeHead types.TreeHead, origin string, witness KeyPair, timestamp uint64) (sigcrypto.Hash, types.Cosignature) {
+	t.Helper()
+	privateKey, err := ParsePrivateKey(witness.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := sigsumSignerFromEd25519(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cosignature, err := treeHead.Cosign(signer, origin, timestamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKey := signer.Public()
+	return sigcrypto.HashBytes(publicKey[:]), cosignature
+}
+
 func TestSigsumEmbeddedPolicyTrustRoot(t *testing.T) {
 	fixture := newSignedFixture(t, 3)
 	root := fixture.TrustRoot
-	root.Sigsum = SigsumTrustRoot{Policy: sigsumPolicyTextFromTrustRoot(t, fixture.TrustRoot.Sigsum)}
+	sigsumRoot, err := SigsumTrustRootFromPolicy("", sigsumPolicyTextFromTrustRoot(t, fixture.TrustRoot.Sigsum))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root.Sigsum = sigsumRoot
 	result, err := Verify(context.Background(), VerifyRequest{
 		Bundle:           fixture.Bundle,
 		Subjects:         []Subject{fixture.Subject},

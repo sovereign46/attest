@@ -142,6 +142,15 @@ func TestVerifyRefusesMalformedAttestationAndPolicyCases(t *testing.T) {
 	}
 }
 
+func TestVerifyRefusesUnknownMode(t *testing.T) {
+	req, _ := deterministicVerifyFixture(t)
+	req.Mode = "prodution"
+	result, err := Verify(context.Background(), req)
+	if err == nil || result.State != StateRefused || len(result.Diagnostics) != 1 || result.Diagnostics[0].Code != "mode-invalid" {
+		t.Fatalf("unknown mode did not fail closed: %+v, %v", result, err)
+	}
+}
+
 func TestVerifyStatementSubjectLimit(t *testing.T) {
 	for _, count := range []int{MaxStatementSubjects, MaxStatementSubjects + 1} {
 		t.Run(strconv.Itoa(count), func(t *testing.T) {
@@ -172,6 +181,69 @@ func TestVerifySubjectDigestLimit(t *testing.T) {
 				}
 			})
 			assertStatementLimit(t, req, count > MaxSubjectDigests, "too many digests")
+		})
+	}
+}
+
+func TestSignRejectsNonCanonicalKeyID(t *testing.T) {
+	signing := mustKeyPair(t)
+	subject := Subject{Name: "registry.json", SHA256: strings.Repeat("0", 64), SizeBytes: 1}
+	for _, keyID := range []string{"", " ", " release", "release ", "\trelease"} {
+		t.Run(strconv.Quote(keyID), func(t *testing.T) {
+			if _, err := Sign(context.Background(), SignOptions{Subjects: []Subject{subject}, PrivateKey: signing.PrivateKey, KeyID: keyID, SignedAt: fixedTime}); err == nil {
+				t.Fatalf("Sign accepted noncanonical key ID %q", keyID)
+			}
+		})
+	}
+}
+
+func TestSignRejectsDuplicateOrAmbiguousSubjects(t *testing.T) {
+	signing := mustKeyPair(t)
+	valid := Subject{Name: "registry.json", SHA256: strings.Repeat("0", 64), SizeBytes: 1}
+	for _, subjects := range [][]Subject{
+		{valid, valid},
+		{{Name: " registry.json", SHA256: valid.SHA256, SizeBytes: 1}},
+	} {
+		if _, err := Sign(context.Background(), SignOptions{Subjects: subjects, PrivateKey: signing.PrivateKey, KeyID: "release", SignedAt: fixedTime}); err == nil {
+			t.Fatalf("Sign accepted ambiguous subjects: %+v", subjects)
+		}
+	}
+}
+
+func TestVerifyRefusesAmbiguousOrMalformedSubjects(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*VerifyRequest, ed25519.PrivateKey)
+		want   string
+	}{
+		{"duplicate expected name", func(req *VerifyRequest, _ ed25519.PrivateKey) { req.Subjects = append(req.Subjects, req.Subjects[0]) }, "duplicate name"},
+		{"invalid expected digest", func(req *VerifyRequest, _ ed25519.PrivateKey) { req.Subjects[0].SHA256 = "" }, "expected subject"},
+		{"duplicate statement name", func(req *VerifyRequest, signing ed25519.PrivateKey) {
+			req.Bundle = resignStatement(t, req.Bundle, signing, func(statement *Statement) { statement.Subject = append(statement.Subject, statement.Subject[0]) })
+		}, "duplicate subject name"},
+		{"missing sha256", func(req *VerifyRequest, signing ed25519.PrivateKey) {
+			req.Bundle = resignStatement(t, req.Bundle, signing, func(statement *Statement) { delete(statement.Subject[0].Digest, DigestAlgorithmSHA256) })
+		}, "sha256 digest is required"},
+		{"case-aliased sha256", func(req *VerifyRequest, signing ed25519.PrivateKey) {
+			req.Bundle = resignStatement(t, req.Bundle, signing, func(statement *Statement) {
+				statement.Subject[0].Digest["SHA256"] = statement.Subject[0].Digest[DigestAlgorithmSHA256]
+			})
+		}, "ambiguous sha256"},
+		{"omitted nonzero size", func(req *VerifyRequest, signing ed25519.PrivateKey) {
+			req.Bundle = resignStatement(t, req.Bundle, signing, func(statement *Statement) { statement.Subject[0].Size = 0 })
+		}, "size mismatch"},
+		{"negative size", func(req *VerifyRequest, signing ed25519.PrivateKey) {
+			req.Bundle = resignStatement(t, req.Bundle, signing, func(statement *Statement) { statement.Subject[0].Size = -1 })
+		}, "size must not be negative"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, signing := deterministicVerifyFixture(t)
+			tt.mutate(&req, signing)
+			result, err := Verify(context.Background(), req)
+			if err == nil || result.State != StateRefused || len(result.Diagnostics) != 1 || result.Diagnostics[0].Code != "attestation-invalid" || !strings.Contains(result.Diagnostics[0].Message, tt.want) {
+				t.Fatalf("expected attestation refusal containing %q: %+v, %v", tt.want, result, err)
+			}
 		})
 	}
 }
