@@ -234,7 +234,11 @@ func validateTransparencyStatus(status TransparencyStatus) error {
 }
 
 func validateIdentityRevocations(revocations []IdentityRevocation) error {
-	seen := make(map[string]struct{}, len(revocations))
+	type identityKey struct {
+		issuer  string
+		subject string
+	}
+	seen := make(map[identityKey]struct{}, len(revocations))
 	for i, revocation := range revocations {
 		if strings.TrimSpace(revocation.Issuer) == "" || strings.TrimSpace(revocation.Subject) == "" {
 			return validationError("identity-revocation-invalid", "identityRevocations[%d] requires issuer and subject", i)
@@ -242,7 +246,7 @@ func validateIdentityRevocations(revocations []IdentityRevocation) error {
 		if revocation.Issuer != strings.TrimSpace(revocation.Issuer) || revocation.Subject != strings.TrimSpace(revocation.Subject) {
 			return validationError("identity-revocation-invalid", "identityRevocations[%d] issuer and subject must not contain leading or trailing whitespace", i)
 		}
-		identity := revocation.Issuer + "\x00" + revocation.Subject
+		identity := identityKey{issuer: revocation.Issuer, subject: revocation.Subject}
 		if _, exists := seen[identity]; exists {
 			return validationError("identity-revocation-duplicate", "identityRevocations contains duplicate identity %q/%q", revocation.Issuer, revocation.Subject)
 		}

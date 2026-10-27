@@ -69,6 +69,20 @@ func TestReadJSONFileRejectsOneOverLimit(t *testing.T) {
 	if _, err := readJSONFile(path); err == nil || !strings.Contains(err.Error(), "byte limit") {
 		t.Fatalf("one-over JSON file was accepted: %v", err)
 	}
+	loaders := []struct {
+		name string
+		load func(string) error
+	}{
+		{name: "bundle", load: func(path string) error { _, err := LoadBundle(path); return err }},
+		{name: "trust root", load: func(path string) error { _, err := LoadTrustRoot(path); return err }},
+	}
+	for _, loader := range loaders {
+		t.Run(loader.name, func(t *testing.T) {
+			if err := loader.load(path); err == nil || !strings.Contains(err.Error(), "byte limit") {
+				t.Fatalf("public loader accepted one-over JSON file: %v", err)
+			}
+		})
+	}
 }
 
 func TestTypedInputsApplyResourceLimitsBeforeDecodingOrFingerprinting(t *testing.T) {

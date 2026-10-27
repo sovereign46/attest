@@ -29,10 +29,6 @@ func verifySigsumTransparency(bundle Bundle, root TrustRoot, signingKey TrustedK
 		return result
 	}
 	result.Present = true
-	if err := validateSigsumProofResourceBounds(bundle.Sigsum.Proof); err != nil {
-		result.VerificationDetail = err.Error()
-		return result
-	}
 	compiled, err := sigsumVerificationPolicy(root)
 	if err != nil {
 		result.VerificationDetail = "Sigsum trust root: " + err.Error()

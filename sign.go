@@ -105,7 +105,7 @@ func Sign(ctx context.Context, options SignOptions) (Bundle, error) {
 		}
 		bundle.Sigsum = &SigsumProof{Proof: proof}
 	}
-	if _, err := MarshalBundle(bundle); err != nil {
+	if err := validateBundleResourceBounds(bundle); err != nil {
 		return Bundle{}, fmt.Errorf("signed bundle exceeds consumer limits: %w", err)
 	}
 	return bundle, nil

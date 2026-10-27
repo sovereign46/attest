@@ -391,7 +391,7 @@ func validateSigsumPolicyComplexity(text string) error {
 	depths := map[string]int{"none": 1}
 	entities := 0
 	references := 0
-	for _, line := range strings.Split(text, "\n") {
+	for line := range strings.SplitSeq(text, "\n") {
 		if len(line) > maxSigsumPolicyLineBytes {
 			return fmt.Errorf("sigsum policy line exceeds %d-byte limit", maxSigsumPolicyLineBytes)
 		}
